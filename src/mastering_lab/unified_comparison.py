@@ -18,6 +18,7 @@ from .compression_advisor import suggest_compression
 from .pro_c3_song_preview import make_preview, audition_files, verify_source, save_choice
 from .pro_c3_loudness_match import preview_volume, BASE_VOLUME
 
+CACHE_RENDER_VERSION = 2  # v0.23.4 song-aware processing; never reuse legacy static-preview cache
 MIXES = ('balanced', 'vocal-focus', 'punchy')
 COMPRESSIONS = ('original', 'gentle', 'firm')
 MIX_NAMES = {'balanced':'Balanced', 'vocal-focus':'Vocal Focus', 'punchy':'Punchy'}
@@ -26,7 +27,7 @@ COMP_NAMES = {'original':'Original', 'gentle':'Gentle', 'firm':'Firm'}
 
 def session_fingerprint(paths):
     """Change cache identity if any premix is replaced, edited or moved."""
-    entries = []
+    entries = [['preview_render_schema',CACHE_RENDER_VERSION]]
     for key in MIXES:
         p = Path(paths[key]).resolve()
         stat = p.stat()
@@ -74,7 +75,7 @@ class PrepareNineWorker(QThread):
                     pass
             data = {}
             for key in MIXES:
-                result = make_preview(self.root, self.paths[key])
+                result = make_preview(self.root, self.paths[key], song_aware=True)
                 if result.get('status') != 'needs_review':
                     raise ValueError(key + ' : ' + str(result.get('error', 'Rendu incomplet')))
                 sources = audition_files(self.root, result)
@@ -164,11 +165,11 @@ class UnifiedComparison(QWidget):
         brand.setStyleSheet('font-size:18px;font-weight:750;color:#f5f6fa;')
         header.addWidget(brand)
         header.addStretch()
-        ver = QLabel('v0.23.3')
+        ver = QLabel('v0.23.4')
         ver.setStyleSheet('color:#9da4b4;font-size:11px;')
         header.addWidget(ver)
         layout.addLayout(header)
-        self.recommendation = QLabel('✦ Hermes : recommandation de mix en attente · Original par défaut (compression non choisie par IA)')
+        self.recommendation = QLabel('✦ Hermes : recommandation de mix en attente · Pro-C 3 adaptatif basé sur des mesures PCM, pas Hermes')
         self.recommendation.setWordWrap(True)
         self.recommendation.setStyleSheet('color:#c7b8ff;font-size:12px;')
         layout.addWidget(self.recommendation)
@@ -287,7 +288,7 @@ class UnifiedComparison(QWidget):
     def recommended_mix(self, mix, reference_used=False):
         if mix in MIXES:
             ref = ' · référence prise en compte' if reference_used else ''
-            self.recommendation.setText('✦ Hermes recommande : ' + MIX_NAMES[mix] + ' + Original (compression par défaut, PAS un choix IA)' + ref + '.')
+            self.recommendation.setText('✦ Hermes recommande le mix : ' + MIX_NAMES[mix] + ' · Compression Pro-C 3 : analyse PCM distincte, PAS une décision Hermes' + ref + '.')
 
     def is_busy(self):
         return bool(self.worker and self.worker.isRunning())
@@ -356,6 +357,16 @@ class UnifiedComparison(QWidget):
             else:
                 parts.append('Diff. RMS : ' + str(metrics.get('rms_delta_db')) + ' dB')
                 parts.append('Null RMS : ' + str(metrics.get('null_difference_rms_dbfs')) + ' dBFS')
+        if self._active[1] != 'original':
+            report = self._reports.get(self._active[0], {})
+            plan = report.get('adaptive_plan') or {}
+            scenario = (plan.get('scenarios') or {}).get(self._active[1], {})
+            if scenario:
+                # These are exact normalized plugin points, not physical dB/ratio.
+                parts.append('Réglages calibrés : threshold='
+                             + str(scenario.get('threshold'))
+                             + ', ratio=' + str(scenario.get('ratio'))
+                             + ' (normalisés)')
         self.measure_status.setText('  |  '.join(parts))
         self._update_advisor()
 
@@ -431,7 +442,7 @@ class UnifiedComparison(QWidget):
         self._update_active_diagnostics()
         self.prepare.setVisible(False)
         diagnostic_note = ' Mesures calculées sur les WAV.' if self._diagnostics else ' ⚠ Diagnostic indisponible : ' + str(result.get('diagnostics_error','erreur non précisée'))
-        self.status.setText(('9 combinaisons récupérées du cache.' if result.get('cached') else '9 combinaisons générées.') + diagnostic_note + ' ♥ approuve pour le mastering.')
+        self.status.setText(('9 combinaisons adaptatives récupérées du cache.' if result.get('cached') else '9 combinaisons préparées avec grille Pro-C 3 adaptée au mix.') + diagnostic_note + ' ♥ approuve pour le mastering.')
         self.prepared.emit(True)
 
     def _setup_players(self):

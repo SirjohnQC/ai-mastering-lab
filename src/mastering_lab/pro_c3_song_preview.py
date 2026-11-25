@@ -17,6 +17,7 @@ import soundfile as sf
 from .pro_c3_parameter_validation import prepare_scenario, validate_readback, SCENARIOS
 from .pro_c3_testbench import _verified_plugin
 from .pro_c3_loudness_match import build_playback_matching
+from .adaptive_pro_c3 import prepare_adaptive
 
 MIN_FRAMES, MAX_FRAMES, RATE = 48000 * 2, 48000 * 600, 48000
 
@@ -61,7 +62,7 @@ def verify_output(path, source_info, tail_samples):
             'extra_tail_frames': int(delta), 'sample_peak_dbfs': round(20 * math.log10(max(peak, 1e-12)), 2)}
 
 
-def make_preview(root, source, *, host=None, plugin=None, runner=None):
+def make_preview(root, source, *, host=None, plugin=None, runner=None, song_aware=False):
     """Create immutable session with Original/Gentle/Firm audition copies.
 
     Caller must obtain explicit UI consent and invoke on a worker thread.
@@ -84,13 +85,18 @@ def make_preview(root, source, *, host=None, plugin=None, runner=None):
     inspection = runner(host, 'inspect', plugin=plugin, timeout=90)
     _verified_plugin(inspection)
     # Validate full calibration BEFORE copying or processing any user audio.
-    prepared = {key: prepare_scenario(grid, key) for key in SCENARIOS}
+    if song_aware:
+        adaptive_plan, prepared = prepare_adaptive(grid, source)
+    else:
+        adaptive_plan = None
+        prepared = {key: prepare_scenario(grid, key) for key in SCENARIOS}
     session = base / (datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S') + '-' + uuid4().hex[:8])
     session.mkdir(parents=True, exist_ok=False)
     report_file = session / 'report.json'
     report = {'schema_version':1, 'kind':'pro_c3_manual_song_preview', 'created_utc':datetime.now(timezone.utc).isoformat(),
               'status':'failed', 'automatic_compression_enabled':False, 'ready_to_render':False,
-              'mapping_verified':False, 'use_for_hermes':False, 'source_name':source.name,
+              'mapping_verified':False, 'use_for_hermes':False,
+              'song_aware_preview':bool(song_aware), 'adaptive_plan':adaptive_plan, 'source_name':source.name,
               'source_path':str(source), 'source_frames':int(info.frames), 'sample_rate':RATE,
               'scenarios':{}, 'note':'Écoute expérimentale sur COPIES, approuvée manuellement. Aucune exportation de master.'}
     try:
