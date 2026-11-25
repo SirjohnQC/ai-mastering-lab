@@ -111,6 +111,10 @@ def master_song(source, output_dir, *, target_lufs=-14.0, target_tp=-1.0,
     def notify(stage, percent):
         if progress: progress(stage, percent)
 
+    # Leave 0.2 dB of encoding/resampling headroom for the -1 dBTP ceiling.
+    # This is a stricter INTERNAL render target, not a changed user-facing goal.
+    render_tp = target_tp - 0.20
+
     try:
         notify('Mesure loudness du mix', 10)
         before = _measure(ffmpeg, source, stop=stop)
@@ -122,7 +126,7 @@ def master_song(source, output_dir, *, target_lufs=-14.0, target_tp=-1.0,
         if not all(math.isfinite(v) for v in values.values()):
             raise MasteringError('Le WAV ne permet pas une mesure loudness fiable (silence ?).')
         notify('Auto Master : normalisation et contrôle des crêtes', 38)
-        af = (f'loudnorm=I={target_lufs}:TP={target_tp}:LRA=11:'
+        af = (f'loudnorm=I={target_lufs}:TP={render_tp}:LRA=11:'
               f'measured_I={values["input_i"]}:measured_TP={values["input_tp"]}:'
               f'measured_LRA={values["input_lra"]}:measured_thresh={values["input_thresh"]}:'
               f'offset={values["target_offset"]}:linear=true:print_format=json')
@@ -144,7 +148,7 @@ def master_song(source, output_dir, *, target_lufs=-14.0, target_tp=-1.0,
         issues = []
         if not math.isfinite(measured_lufs) or abs(measured_lufs - target_lufs) > 1.0:
             issues.append(f'LUFS hors tolérance : {measured_lufs:.2f} (cible {target_lufs:.1f})')
-        if not math.isfinite(measured_tp) or measured_tp > target_tp + 0.2:
+        if not math.isfinite(measured_tp) or measured_tp > target_tp:
             issues.append(f'True peak trop élevé : {measured_tp:.2f} dBTP (cible {target_tp:.1f})')
         if measured_peak > 0.0:
             issues.append(f'Sample peak positif : {measured_peak:.2f} dBFS')
@@ -166,6 +170,7 @@ def master_song(source, output_dir, *, target_lufs=-14.0, target_tp=-1.0,
             'output_lufs': measured_lufs, 'output_true_peak_dbtp': measured_tp,
             'output_sample_peak_dbfs': measured_peak,
             'target_lufs': target_lufs, 'target_true_peak_dbtp': target_tp,
+            'render_true_peak_ceiling_dbtp': render_tp,
             'ffmpeg_normalization_mode': rendered.get('normalization_type', 'unknown'),
             'qc_issues': issues,
             'scope': ('Première passe technique : loudness / true peak / PCM24. '
