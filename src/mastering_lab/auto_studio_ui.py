@@ -701,6 +701,8 @@ class AutoStudioPage(QWidget):
         details = QPushButton('Rapport & spectrogrammes')
         details.setObjectName('secondary')
         details.clicked.connect(self._show_details)
+        self.more_button = more
+        self.details_button = details
         secondary.addWidget(self.gen2, 1)
         secondary.addWidget(more, 1)
         secondary.addWidget(details, 1)
@@ -709,6 +711,7 @@ class AutoStudioPage(QWidget):
         disclaimer.setWordWrap(True)
         disclaimer.setStyleSheet('color:#9faac0;font-size:12px;')
         rv.addWidget(disclaimer)
+        self.disclaimer_label = disclaimer
         rv.addStretch(1)
         result_scroll = QScrollArea()
         result_scroll.setWidgetResizable(True)
@@ -725,11 +728,13 @@ class AutoStudioPage(QWidget):
         mt = QLabel('Ton mix, ton master.')
         mt.setStyleSheet('background:transparent;font-size:24px;font-weight:750;')
         ml.addWidget(mt)
+        self.master_headline = mt
         self.master_description = QLabel('Sélectionne un mixage sur la page Comparer pour commencer.')
         self.master_description.setWordWrap(True)
         self.master_description.setStyleSheet('color:#abb5c8;')
         ml.addWidget(self.master_description)
-        ml.addWidget(QLabel('Nom de la chanson (nom du fichier exporté)'))
+        self.master_title_label = QLabel('Nom de la chanson (nom du fichier exporté)')
+        ml.addWidget(self.master_title_label)
         self.song_title_master = QLineEdit()
         self.song_title_master.setObjectName('songTitleMaster')
         self.song_title_master.setPlaceholderText('Ex. All We Know Is Falling')
@@ -772,6 +777,7 @@ class AutoStudioPage(QWidget):
         player_title = QLabel('Écoute du master')
         player_title.setStyleSheet('font-size:14px;font-weight:700;color:#f3f2fa;')
         player_layout.addWidget(player_title)
+        self.master_review_label = player_title
         self.master_waveform = WaveformStrip(self.master_player_panel)
         self.master_waveform.setFixedHeight(70)
         self.master_waveform.setActive(True)
@@ -819,6 +825,7 @@ class AutoStudioPage(QWidget):
         advanced_master.setObjectName('secondary')
         advanced_master.clicked.connect(self._handoff_to_advanced_master)
         ml.addWidget(advanced_master)
+        self.master_advanced_button = advanced_master
         caution = QLabel('Première passe technique : loudness, true peak et WAV 24-bit. '
                          'Les contrôles QC ne remplacent pas l’écoute humaine ni la cohérence d’un album complet.')
         caution.setWordWrap(True)
@@ -826,6 +833,7 @@ class AutoStudioPage(QWidget):
         ml.addWidget(caution)
         ml.addStretch(2)
         self.stack.addWidget(master)
+        self._apply_language()
         self._go(0)
 
     def _change_language(self, index):
@@ -855,6 +863,23 @@ class AutoStudioPage(QWidget):
             lang,'options_open' if self.optional_tools_panel.isVisible()
             else 'options_closed'))
         self.unified.set_language(lang)
+        if hasattr(self, 'master_headline'):
+            self.master_headline.setText(tr(lang,'master_headline'))
+            self.master_title_label.setText(tr(lang,'master_title'))
+            self.master_review_label.setText(tr(lang,'master_review'))
+            self.master_cancel.setText(tr(lang,'master_cancel'))
+            self.master_open.setText(tr(lang,'master_open'))
+            self.master_preflight.setText(tr(lang,'master_preflight'))
+            self.master_advanced_button.setText(tr(lang,'master_advanced'))
+            self.gen2.setText(tr(lang,'gen2'))
+            self.more_button.setText(tr(lang,'more'))
+            self.details_button.setText(tr(lang,'details'))
+            self.disclaimer_label.setText(tr(lang,'disclaimer'))
+            if self._master_input is None:
+                self.master_description.setText(tr(lang,'master_initial'))
+            else:
+                self.master_description.setText(tr(lang,'source',name=self._master_input.name,
+                                                   variant=self._master_mix_variant or 'original'))
         self._update_master_button()
 
     def _toggle_optional_tools(self):
@@ -1824,7 +1849,8 @@ class AutoStudioPage(QWidget):
         running = self._master_worker is not None and self._master_worker.isRunning()
         processed = self._master_is_processed()
         self.master_run.setEnabled(not running and not processed and self._master_key() is not None)
-        self.master_run.setText('✓  MASTER DÉJÀ CRÉÉ' if processed else '✦  AUTO MASTER')
+        self.master_run.setText(tr(self._language,
+                                   'master_done' if processed else 'master_action'))
         if processed:
             self.master_status.setText('✓  Master déjà créé. Aucun nouveau traitement nécessaire.')
 
