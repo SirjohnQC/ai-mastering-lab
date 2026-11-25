@@ -1,5 +1,5 @@
 """Application version metadata."""
-APP_VERSION = '0.23.8'
+APP_VERSION = '0.23.9'
 VERSION = APP_VERSION
 
 def window_title() -> str:
