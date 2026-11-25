@@ -53,6 +53,35 @@ def prepare_scenario(grid, name):
     return expected, changes
 
 
+def prepare_discrete_scenario(grid, values):
+    """Validate every planned knob against measured exact getText grid values.
+
+    A song-specific plan is allowed to choose only known discrete points.
+    It may not interpolate, guess new indices or silently enable Auto Gain.
+    """
+    if not isinstance(values, dict) or set(values) != {'threshold','ratio','attack','release'}:
+        raise ValueError('Unexpected adaptive parameter set.')
+    allowed = {
+        'threshold':{.70,.85},
+        'ratio':{.30,.70},
+        'attack':{.30},
+        'release':{.30},
+    }
+    expected = {}
+    changes = []
+    for role in ('threshold','ratio','attack','release'):
+        value = values[role]
+        if isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value):
+            raise ValueError('Invalid normalized parameter: '+role)
+        norm = float(value)
+        if norm not in allowed[role]:
+            raise ValueError('Unprobed/adaptive parameter prohibited: '+role)
+        expected[role] = _lookup_grid(grid,role,norm)
+        changes.append((INDICES[role],norm))
+    changes.append((AUTO_GAIN_INDEX,0.0))
+    return expected,changes
+
+
 def validate_readback(result, expected):
     """Check actual plugin parameter echoes, including index/normalized/value.
 
