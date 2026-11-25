@@ -25,6 +25,17 @@ class NavigationAndLanguageTests(unittest.TestCase):
         self.assertIn('self.unified._sources.get(self._selected)',methods['_selected_mix_path'])
         self.assertIn('self._approved', (ROOT/'unified_comparison.py').read_text(encoding='utf-8'))
 
+    def test_completed_qthread_handle_is_safe_to_query(self):
+        code=(ROOT/'unified_comparison.py').read_text(encoding='utf-8')
+        tree=ast.parse(code)
+        methods={node.name:ast.get_source_segment(code,node)
+                 for node in ast.walk(tree) if isinstance(node,ast.FunctionDef)}
+        self.assertIn('except RuntimeError:',methods['is_busy'])
+        self.assertIn('self.worker = None',methods['is_busy'])
+        self.assertIn('self.worker = None',methods['_worker_finished'])
+        self.assertIn('worker.finished.connect(self._worker_finished)',code)
+        self.assertIn('worker.finished.connect(worker.deleteLater)',code)
+
     def test_both_languages_have_all_keys(self):
         from mastering_lab.ui_language import TRANSLATIONS, tr
         self.assertEqual(set(TRANSLATIONS['fr']),set(TRANSLATIONS['en']))
