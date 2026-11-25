@@ -446,7 +446,7 @@ class UnifiedComparison(QWidget):
         self.prepare.setEnabled(False)
         self.play_button.setEnabled(False)
         self.seek.setEnabled(False)
-        self.status.setText('Préparation des 9 pistes ou récupération du cache… Aucun original modifié.')
+        self.status.setText(tr(self._language,'compare_wait'))
         worker = PrepareNineWorker(self.root, dict(self._sources), self)
         self.worker = worker
         worker.completed.connect(self._on_prepared)
@@ -496,15 +496,11 @@ class UnifiedComparison(QWidget):
                 button.setVisible(False)
         comparison = COMP_NAMES.get(self._marker_reference or '', '')
         self.review_summary.setText(
-            ('✦ ' + str(len(self._active_markers))
-             + ' passages à écouter — repères roses sur la waveform.')
-            if self._active_markers else
-            'Aucun passage particulièrement affecté : compare à l’oreille.')
+            tr(self._language,'compare_review_count',count=len(self._active_markers))
+            if self._active_markers else tr(self._language,'compare_no_markers'))
         self.marker_title.setText(
-            'Repères roses : passages à comparer avec ' + comparison
-            + ' (différences PCM, pas nécessairement des défauts)'
-            if self._active_markers else
-            'Aucun repère mesurable pour ce mix : essaye Gentle ou Firm.')
+            tr(self._language,'compare_marker_title',variant=comparison)
+            if self._active_markers else tr(self._language,'compare_marker_none'))
 
     def set_language(self, language):
         """Translate stable Compare labels in place; never rebuild audio players."""
@@ -517,6 +513,12 @@ class UnifiedComparison(QWidget):
         self.advisor_title.setText(tr(language,'recommend'))
         self.user_journey.setText(tr(language,'journey'))
         self.review_summary.setText(tr(language,'hint'))
+        if self._files:
+            self._update_active_diagnostics()
+        else:
+            self.status.setText(tr(language,'compare_status_wait'))
+            self.approval_status.setText(tr(language,'compare_approval_default'))
+        self._update_advisor()
         for key in COMPRESSIONS:
             self.buttons[key].setText(tr(language,key))
         for key,label in zip(('natural','balanced','punchy'),
@@ -701,7 +703,7 @@ class UnifiedComparison(QWidget):
         if not metrics:
             self._advisor_choice = 'original'
             self.audition_suggestion.setEnabled(False)
-            self.advisor_status.setText('Analyse en attente. La suggestion ne modifie aucun son.')
+            self.advisor_status.setText(tr(self._language,'compare_advice_pending'))
             return
         result = suggest_compression(metrics, mix, self._intensity)
         fallback_choice = result['variant']
@@ -712,16 +714,17 @@ class UnifiedComparison(QWidget):
         ai_variant = record.get('selected')
         if ai_variant in allowed and self._ai_compression.get('mode') == 'hermes':
             selected, prefix = ai_variant, '🧠 Hermes local'
-            explanation = str(record.get('reason', 'Suggestion basée sur les mesures.'))[:160]
+            explanation = (str(record.get('reason', 'Suggestion basée sur les mesures.'))[:160]
+                           if self._language == 'fr' else tr('en','compare_hermes_reason'))
         else:
             selected = fallback_choice if fallback_choice in allowed else 'original'
             prefix = '✦ Conseiller PCM'
-            explanation = result['reason']
+            explanation = result['reason'] if self._language == 'fr' else tr('en','compare_pcm_reason')
         self._advisor_choice = selected
         self.audition_suggestion.setEnabled((mix, selected) in self._files)
         self.advisor_status.setText(prefix + ' : ' + MIX_NAMES[mix] + ' + '
                                     + COMP_NAMES[selected] + ' · ' + explanation
-                                    + ' · Suggestion seulement : ♥ requis pour le mastering.')
+                                    + ' · ' + tr(self._language,'compare_advice_heart'))
 
     def preview_suggestion(self):
         # An audition never implicitly approves mastering. This button is a
@@ -751,7 +754,7 @@ class UnifiedComparison(QWidget):
     def _on_prepared(self, result):
         self.prepare.setEnabled(True)
         if result.get('status') != 'ready':
-            self.status.setText('Rendu impossible : ' + str(result.get('error','erreur inconnue')) + ' · Vérifie le format stéréo WAV 48 kHz.')
+            self.status.setText(tr(self._language,'compare_render_fail',error=result.get('error','unknown')))
             self.prepare.setVisible(True)
             self.prepared.emit(False)
             return
@@ -764,12 +767,14 @@ class UnifiedComparison(QWidget):
         self._refresh_gentle_gate()
         self._update_active_diagnostics()
         self.prepare.setVisible(False)
-        diagnostic_note = ' Mesures calculées sur les WAV.' if self._diagnostics else ' ⚠ Diagnostic indisponible : ' + str(result.get('diagnostics_error','erreur non précisée'))
-        if self._ai_compression.get('mode') == 'hermes':
-            diagnostic_note += ' Hermes local : propositions de compression disponibles.'
-        else:
-            diagnostic_note += ' Conseiller PCM utilisé (Hermes non disponible ou réponse refusée).'
-        self.status.setText(('9 combinaisons adaptatives récupérées du cache.' if result.get('cached') else '9 combinaisons préparées avec grille Pro-C 3 adaptée au mix.') + diagnostic_note + ' ♥ approuve pour le mastering.')
+        diagnostic_note = (tr(self._language,'compare_measure_ok') if self._diagnostics
+                           else tr(self._language,'compare_diagnostics_notice'))
+        diagnostic_note += ' ' + tr(
+            self._language,'compare_hermes_ok' if self._ai_compression.get('mode') == 'hermes'
+            else 'compare_pcm_fallback')
+        self.status.setText(
+            tr(self._language,'compare_ready_cached' if result.get('cached') else 'compare_ready_new')
+            + ' ' + diagnostic_note + ' ' + tr(self._language,'compare_heart_hint'))
         self.prepared.emit(True)
 
     def _setup_players(self):
@@ -895,7 +900,7 @@ class UnifiedComparison(QWidget):
                 QMessageBox.warning(self, 'Préférence', str(exc));return
         self._approved = key
         self._refresh_hearts()
-        self.approval_status.setText('♥ ' + MIX_NAMES[key[0]]+' + '+COMP_NAMES[comp] + ' approuvé pour le prochain Mastering. Choix manuel, pas Hermes.')
+        self.approval_status.setText(tr(self._language,'compare_approval_yes',mix=MIX_NAMES[key[0]],variant=COMP_NAMES[comp]))
 
     def master_source(self, selected_mix):
         """Never automatically master a compressed version without ♥ explicit approval."""
@@ -915,11 +920,11 @@ class UnifiedComparison(QWidget):
             self._timer.stop()
             for p in self._players.values():p.pause()
             self._select_audible()
-            self.play_button.setText('▶ Écouter')
+            self.play_button.setText(tr(self._language,'play'))
             return
         if len(self._loaded) < 9:
             self._pending_play = True
-            self.play_button.setText('Chargement…')
+            self.play_button.setText(tr(self._language,'compare_play_loading'))
             return
         if self._started:
             current = self._players[self._active].position()
@@ -935,7 +940,7 @@ class UnifiedComparison(QWidget):
             self._outputs[key].setMuted(True)
             p.stop()
             p.setPosition(0)
-        self.play_button.setText('▶ Écouter')
+        self.play_button.setText(tr(self._language,'play'))
         self.seek.setValue(0)
         self.waveform.setPosition(0)
         self.clock.setText('00:00 / '+f'{self._max_ms//60000:02}:{self._max_ms//1000%60:02}')
@@ -1012,7 +1017,7 @@ class UnifiedComparison(QWidget):
         for button in self.hearts.values():button.setEnabled(False)
         for comp,button in self.buttons.items():button.setEnabled(comp == 'original')
         self._refresh_hearts()
-        self.approval_status.setText('Aucune compression approuvée pour le mastering. Original utilisé par défaut.')
+        self.approval_status.setText(tr(self._language,'compare_approval_default'))
         self._update_styles()
 
     def shutdown(self):
