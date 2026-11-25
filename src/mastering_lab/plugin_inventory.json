@@ -1,0 +1,205 @@
+{
+  "generated_at": "2026-11-21T22:29:45.246469+00:00",
+  "scan_roots": [
+    "C:\\Program Files\\Common Files\\VST3",
+    "C:\\Program Files\\Common Files\\VST3",
+    "C:\\Users\\Sirjohn\\AppData\\Local\\Programs\\Common\\VST3"
+  ],
+  "plugins": [
+    {
+      "name": "AmpliTube 5",
+      "path": "C:\\Program Files\\Common Files\\VST3\\IK Multimedia\\AmpliTube 5.vst3",
+      "type": "bundle"
+    },
+    {
+      "name": "AmpliTube 5",
+      "path": "C:\\Program Files\\Common Files\\VST3\\IK Multimedia\\AmpliTube 5.vst3\\Contents\\x86_64-win\\AmpliTube 5.vst3",
+      "type": "file"
+    },
+    {
+      "name": "CATAMP",
+      "path": "C:\\Program Files\\Common Files\\VST3\\CATAMP.vst3",
+      "type": "bundle"
+    },
+    {
+      "name": "CATAMP",
+      "path": "C:\\Program Files\\Common Files\\VST3\\CATAMP.vst3\\Contents\\x86_64-win\\CATAMP.vst3",
+      "type": "file"
+    },
+    {
+      "name": "Eiosis AirEQ",
+      "path": "C:\\Program Files\\Common Files\\VST3\\Eiosis\\Eiosis AirEQ.vst3",
+      "type": "file"
+    },
+    {
+      "name": "Eiosis AirEQ 5.1",
+      "path": "C:\\Program Files\\Common Files\\VST3\\Eiosis\\Eiosis AirEQ 5.1.vst3",
+      "type": "file"
+    },
+    {
+      "name": "FabFilter Micro",
+      "path": "C:\\Program Files\\Common Files\\VST3\\FabFilter\\FabFilter Micro.vst3",
+      "type": "file"
+    },
+    {
+      "name": "FabFilter One",
+      "path": "C:\\Program Files\\Common Files\\VST3\\FabFilter\\FabFilter One.vst3",
+      "type": "file"
+    },
+    {
+      "name": "FabFilter Pro-C 3",
+      "path": "C:\\Program Files\\Common Files\\VST3\\FabFilter\\FabFilter Pro-C 3.vst3",
+      "type": "file"
+    },
+    {
+      "name": "FabFilter Pro-DS",
+      "path": "C:\\Program Files\\Common Files\\VST3\\FabFilter\\FabFilter Pro-DS.vst3",
+      "type": "file"
+    },
+    {
+      "name": "FabFilter Pro-G",
+      "path": "C:\\Program Files\\Common Files\\VST3\\FabFilter\\FabFilter Pro-G.vst3",
+      "type": "file"
+    },
+    {
+      "name": "FabFilter Pro-L 2",
+      "path": "C:\\Program Files\\Common Files\\VST3\\FabFilter\\FabFilter Pro-L 2.vst3",
+      "type": "file"
+    },
+    {
+      "name": "FabFilter Pro-MB",
+      "path": "C:\\Program Files\\Common Files\\VST3\\FabFilter\\FabFilter Pro-MB.vst3",
+      "type": "file"
+    },
+    {
+      "name": "FabFilter Pro-Q 4",
+      "path": "C:\\Program Files\\Common Files\\VST3\\FabFilter\\FabFilter Pro-Q 4.vst3",
+      "type": "file"
+    },
+    {
+      "name": "FabFilter Pro-R 2",
+      "path": "C:\\Program Files\\Common Files\\VST3\\FabFilter\\FabFilter Pro-R 2.vst3",
+      "type": "file"
+    },
+    {
+      "name": "FabFilter Saturn 2",
+      "path": "C:\\Program Files\\Common Files\\VST3\\FabFilter\\FabFilter Saturn 2.vst3",
+      "type": "file"
+    },
+    {
+      "name": "FabFilter Simplon",
+      "path": "C:\\Program Files\\Common Files\\VST3\\FabFilter\\FabFilter Simplon.vst3",
+      "type": "file"
+    },
+    {
+      "name": "FabFilter Timeless 3",
+      "path": "C:\\Program Files\\Common Files\\VST3\\FabFilter\\FabFilter Timeless 3.vst3",
+      "type": "file"
+    },
+    {
+      "name": "FabFilter Twin 3",
+      "path": "C:\\Program Files\\Common Files\\VST3\\FabFilter\\FabFilter Twin 3.vst3",
+      "type": "file"
+    },
+    {
+      "name": "FabFilter Volcano 3",
+      "path": "C:\\Program Files\\Common Files\\VST3\\FabFilter\\FabFilter Volcano 3.vst3",
+      "type": "file"
+    },
+    {
+      "name": "Nectar 4",
+      "path": "C:\\Program Files\\Common Files\\VST3\\iZotope\\Nectar 4.vst3",
+      "type": "file"
+    },
+    {
+      "name": "Nectar 4 Auto-Level",
+      "path": "C:\\Program Files\\Common Files\\VST3\\iZotope\\Nectar 4 Auto-Level.vst3",
+      "type": "file"
+    },
+    {
+      "name": "Nectar 4 Backer",
+      "path": "C:\\Program Files\\Common Files\\VST3\\iZotope\\Nectar 4 Backer.vst3",
+      "type": "file"
+    },
+    {
+      "name": "Nectar 4 Breath Control",
+      "path": "C:\\Program Files\\Common Files\\VST3\\iZotope\\Nectar 4 Breath Control.vst3",
+      "type": "file"
+    },
+    {
+      "name": "Nectar 4 Compressor",
+      "path": "C:\\Program Files\\Common Files\\VST3\\iZotope\\Nectar 4 Compressor.vst3",
+      "type": "file"
+    },
+    {
+      "name": "Nectar 4 DeEsser",
+      "path": "C:\\Program Files\\Common Files\\VST3\\iZotope\\Nectar 4 DeEsser.vst3",
+      "type": "file"
+    },
+    {
+      "name": "Nectar 4 Delay",
+      "path": "C:\\Program Files\\Common Files\\VST3\\iZotope\\Nectar 4 Delay.vst3",
+      "type": "file"
+    },
+    {
+      "name": "Nectar 4 Dimension",
+      "path": "C:\\Program Files\\Common Files\\VST3\\iZotope\\Nectar 4 Dimension.vst3",
+      "type": "file"
+    },
+    {
+      "name": "Nectar 4 Equalizer",
+      "path": "C:\\Program Files\\Common Files\\VST3\\iZotope\\Nectar 4 Equalizer.vst3",
+      "type": "file"
+    },
+    {
+      "name": "Nectar 4 Gate",
+      "path": "C:\\Program Files\\Common Files\\VST3\\iZotope\\Nectar 4 Gate.vst3",
+      "type": "file"
+    },
+    {
+      "name": "Nectar 4 Pitch",
+      "path": "C:\\Program Files\\Common Files\\VST3\\iZotope\\Nectar 4 Pitch.vst3",
+      "type": "file"
+    },
+    {
+      "name": "Nectar 4 Reverb",
+      "path": "C:\\Program Files\\Common Files\\VST3\\iZotope\\Nectar 4 Reverb.vst3",
+      "type": "file"
+    },
+    {
+      "name": "Nectar 4 Saturation",
+      "path": "C:\\Program Files\\Common Files\\VST3\\iZotope\\Nectar 4 Saturation.vst3",
+      "type": "file"
+    },
+    {
+      "name": "Nectar 4 Voices",
+      "path": "C:\\Program Files\\Common Files\\VST3\\iZotope\\Nectar 4 Voices.vst3",
+      "type": "file"
+    },
+    {
+      "name": "Pulsar Vocal Studio",
+      "path": "C:\\Program Files\\Common Files\\VST3\\Pulsar Audio\\Pulsar Vocal Studio.vst3",
+      "type": "file"
+    },
+    {
+      "name": "soothe2_x64",
+      "path": "C:\\Program Files\\Common Files\\VST3\\oeksound\\soothe2_x64.vst3",
+      "type": "file"
+    },
+    {
+      "name": "STL Tonality - Howard Benson",
+      "path": "C:\\Program Files\\Common Files\\VST3\\STL Tonality - Howard Benson.vst3",
+      "type": "bundle"
+    },
+    {
+      "name": "STL Tonality - Howard Benson",
+      "path": "C:\\Program Files\\Common Files\\VST3\\STL Tonality - Howard Benson.vst3\\Contents\\x86_64-win\\STL Tonality - Howard Benson.vst3",
+      "type": "file"
+    },
+    {
+      "name": "TDR Nova",
+      "path": "C:\\Program Files\\Common Files\\VST3\\TDR Nova.vst3",
+      "type": "file"
+    }
+  ]
+}
