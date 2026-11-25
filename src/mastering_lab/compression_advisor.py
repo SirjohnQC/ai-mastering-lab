@@ -55,6 +55,13 @@ def suggest_compression(metrics: dict, mix: str, intensity: str = 'natural') -> 
         if float(row['max_absolute_sample_difference']) <= 0:
             candidates[variant] = {'eligible':False, 'reason':'Signal inchangé'}
             continue
+        window_analysis = row.get('window_analysis', {})
+        if isinstance(window_analysis, dict) and window_analysis.get('overcompression_warning'):
+            candidates[variant] = {
+                'eligible':False,
+                'reason':'Passages forts trop réduits relativement aux passages calmes'
+            }
+            continue
         peak = float(row['sample_peak_dbfs'])
         crest_delta = crest - float(row['crest_db'])
         rms_delta = float(row['rms_delta_db'])

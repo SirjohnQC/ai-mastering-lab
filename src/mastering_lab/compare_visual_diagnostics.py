@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .compression_diagnostics import wav_profile, compare_wav_content
+from .transient_guard import compare_windows
 import numpy as np
 import soundfile as sf
 
@@ -73,6 +74,12 @@ def measure_combinations(files: dict[tuple[str, str], Path]) -> dict:
                 files[(mix, 'original')], files[(mix, comp)],
                 frames=original['frames'],
             )
+            windows = compare_windows(
+                files[(mix, 'original')], files[(mix, comp)],
+                frames=original['frames'])
+            results[key]['window_analysis'] = windows
+            if windows.get('overcompression_warning'):
+                warnings.append(key + ': strong loud-vs-quiet reduction in PCM windows; review by ear')
             results[key].update({
                 'same_samples_as_original': delta['same_samples'],
                 'rms_delta_db': delta['rms_delta_db'],
@@ -81,5 +88,5 @@ def measure_combinations(files: dict[tuple[str, str], Path]) -> dict:
             })
             if delta['same_samples']:
                 warnings.append(key + ': EXACT same samples as Original; inspect VST routing or bypass')
-    return {'schema_version': 1, 'envelopes': envelopes, 'metrics': results,
+    return {'schema_version': 2, 'envelopes': envelopes, 'metrics': results,
             'warnings': warnings, 'note': 'Measured source WAV files; not FabFilter gain-reduction telemetry.'}
