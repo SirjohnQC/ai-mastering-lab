@@ -13,6 +13,7 @@ from PySide6.QtCore import Qt, QThread, Signal, QUrl, QTimer
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSlider, QCheckBox, QFrame, QMessageBox
 from .waveform_preview import WaveformStrip
+from .ui_language import get_language, tr
 from .compare_visual_diagnostics import measure_combinations
 from .compression_advisor import suggest_compression
 from .ai_compression_decision import decide_compressions, _safe_choice
@@ -181,6 +182,7 @@ class UnifiedComparison(QWidget):
     def __init__(self, root, parent=None):
         super().__init__(parent)
         self.root = Path(root)
+        self._language = get_language()
         self.worker = None
         self._files = {}
         self._reports = {}
@@ -217,7 +219,7 @@ class UnifiedComparison(QWidget):
         brand.setStyleSheet('font-size:18px;font-weight:750;color:#f5f6fa;')
         header.addWidget(brand)
         header.addStretch()
-        ver = QLabel('v0.24.1')
+        ver = QLabel('v0.24.2')
         ver.setStyleSheet('color:#9da4b4;font-size:11px;')
         header.addWidget(ver)
         layout.addLayout(header)
@@ -228,7 +230,8 @@ class UnifiedComparison(QWidget):
         self.user_journey = QLabel('Choisis ton mix → compare la compression → écoute → ♥ → Mastering.')
         self.user_journey.setStyleSheet('color:#aab5cb;font-size:11px;')
         layout.addWidget(self.user_journey)
-        section_mix = QLabel('1. Mixage')
+        self.mix_section = QLabel('1. Mixage')
+        section_mix = self.mix_section
         section_mix.setStyleSheet('font-size:14px;font-weight:700;color:#f3f3f7;')
         layout.addWidget(section_mix)
         mix_row = QHBoxLayout()
@@ -244,7 +247,8 @@ class UnifiedComparison(QWidget):
         border.setFrameShape(QFrame.HLine)
         border.setStyleSheet('background:#343640;max-height:1px;')
         layout.addWidget(border)
-        section_comp = QLabel('2. Compression · Pro-C 3')
+        self.comp_section = QLabel('2. Compression · Pro-C 3')
+        section_comp = self.comp_section
         section_comp.setStyleSheet('font-size:14px;font-weight:700;color:#f3f3f7;')
         layout.addWidget(section_comp)
         choices = QHBoxLayout()
@@ -266,7 +270,8 @@ class UnifiedComparison(QWidget):
         self.prepare.clicked.connect(self._confirm_prepare)
         self.prepare.setVisible(False)   # Recovery only; no mandatory extra button.
         layout.addWidget(self.prepare)
-        player_label = QLabel('Lecteur commun')
+        self.player_label = QLabel('Lecteur commun')
+        player_label = self.player_label
         player_label.setStyleSheet('font-size:14px;font-weight:700;color:#f3f3f7;')
         layout.addWidget(player_label)
         self.waveform = WaveformStrip(self)
@@ -331,7 +336,8 @@ class UnifiedComparison(QWidget):
         self.diagnostics_layout.addLayout(marker_row)
         self._active_markers = []
         self._marker_reference = None
-        advisor_title = QLabel('3. Recommandation IA · Compression')
+        self.advisor_title = QLabel('3. Recommandation IA · Compression')
+        advisor_title = self.advisor_title
         advisor_title.setStyleSheet('font-size:13px;font-weight:700;color:#f3f3f7;')
         layout.addWidget(advisor_title)
         advisory_row = QHBoxLayout()
@@ -371,7 +377,8 @@ class UnifiedComparison(QWidget):
         self.match.toggled.connect(self._apply_levels)
         layout.addWidget(self.match)
         hearts = QHBoxLayout()
-        love_label = QLabel('Choix pour Mastering :')
+        self.love_label = QLabel('Choix pour Mastering :')
+        love_label = self.love_label
         hearts.addWidget(love_label)
         self.hearts = {}
         for comp in COMPRESSIONS:
@@ -386,6 +393,7 @@ class UnifiedComparison(QWidget):
         self.approval_status.setStyleSheet('font-size:11px;color:#afb7c9;')
         layout.addWidget(self.approval_status)
         self._update_styles()
+        self.set_language(self._language)
 
     @property
     def active(self):
@@ -480,19 +488,45 @@ class UnifiedComparison(QWidget):
             if self._active_markers else
             'Aucun repère mesurable pour ce mix : essaye Gentle ou Firm.')
 
+    def set_language(self, language):
+        """Translate stable Compare labels in place; never rebuild audio players."""
+        if language not in ('fr', 'en'):
+            return
+        self._language = language
+        self.mix_section.setText(tr(language,'mix'))
+        self.comp_section.setText(tr(language,'compression'))
+        self.player_label.setText(tr(language,'player'))
+        self.advisor_title.setText(tr(language,'recommend'))
+        self.user_journey.setText(tr(language,'journey'))
+        self.review_summary.setText(tr(language,'hint'))
+        for key in COMPRESSIONS:
+            self.buttons[key].setText(tr(language,key))
+        for key,label in zip(('natural','balanced','punchy'),
+                             ('natural','balanced','punchy')):
+            self.intensity_buttons[key].setText(tr(language,label))
+        self.audition_suggestion.setText(tr(language,'listen_suggestion'))
+        self.match.setText(tr(language,'equal_volume'))
+        self.love_label.setText(tr(language,'master_choice'))
+        if not self._running:
+            self.play_button.setText(tr(language,'play'))
+        self.stop_button.setText(tr(language,'stop'))
+        self.diagnostics_toggle.setText(tr(
+            language, 'diagnostics_open' if self.diagnostics_panel.isVisible()
+            else 'diagnostics_closed'))
+
     def _toggle_diagnostics(self):
         is_open = not self.diagnostics_panel.isVisible()
         self.diagnostics_panel.setVisible(is_open)
-        self.diagnostics_toggle.setText(
-            '⚙ Diagnostics · Advanced (masquer)' if is_open
-            else '⚙ Diagnostics · Advanced (afficher)')
+        self.diagnostics_toggle.setText(tr(
+            self._language, 'diagnostics_open' if is_open
+            else 'diagnostics_closed'))
 
     def set_diagnostics_visible(self, enabled):
         """Allow the host app to open the local diagnostics directly."""
         self.diagnostics_panel.setVisible(bool(enabled))
-        self.diagnostics_toggle.setText(
-            '⚙ Diagnostics · Advanced (masquer)' if enabled
-            else '⚙ Diagnostics · Advanced (afficher)')
+        self.diagnostics_toggle.setText(tr(
+            self._language, 'diagnostics_open' if enabled
+            else 'diagnostics_closed'))
 
     def _waveform_seek(self, fraction):
         if not self._players:return
