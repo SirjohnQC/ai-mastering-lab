@@ -2002,7 +2002,7 @@ class AutoStudioPage(QWidget):
         from .release_preflight import format_preflight
         prefix = 'JSON report: ' if self._language == 'en' else 'Rapport JSON : '
         self.master_preflight_status.setText(format_preflight(report, language=self._language)
-            + '\\n' + prefix + report.get('report_path', '(not saved)' if self._language == 'en' else '(non enregistré)'))
+            + '\n' + prefix + report.get('report_path', '(not saved)' if self._language == 'en' else '(non enregistré)'))
 
     def _release_preflight_failed(self, message):
         self.master_preflight.setEnabled(True)
