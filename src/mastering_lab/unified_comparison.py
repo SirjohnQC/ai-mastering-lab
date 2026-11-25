@@ -671,6 +671,10 @@ class UnifiedComparison(QWidget):
         self._update_active_diagnostics()
         self.prepare.setVisible(False)
         diagnostic_note = ' Mesures calculées sur les WAV.' if self._diagnostics else ' ⚠ Diagnostic indisponible : ' + str(result.get('diagnostics_error','erreur non précisée'))
+        if self._ai_compression.get('mode') == 'hermes':
+            diagnostic_note += ' Hermes local : propositions de compression disponibles.'
+        else:
+            diagnostic_note += ' Conseiller PCM utilisé (Hermes non disponible ou réponse refusée).'
         self.status.setText(('9 combinaisons adaptatives récupérées du cache.' if result.get('cached') else '9 combinaisons préparées avec grille Pro-C 3 adaptée au mix.') + diagnostic_note + ' ♥ approuve pour le mastering.')
         self.prepared.emit(True)
 
