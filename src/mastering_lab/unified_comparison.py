@@ -15,7 +15,8 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushBu
 from .waveform_preview import WaveformStrip
 from .compare_visual_diagnostics import measure_combinations
 from .compression_advisor import suggest_compression
-from .compression_explainer import explain_gentle
+from .compression_explainer import explain_gentle, _threshold_from_report
+from .compression_activity import inspect_threshold_activity, interpret_activity
 from .pro_c3_song_preview import make_preview, audition_files, verify_source, save_choice
 from .pro_c3_loudness_match import preview_volume, BASE_VOLUME
 
@@ -103,7 +104,7 @@ class PrepareNineWorker(QThread):
             if path.is_file():
                 try:
                     cache = json.loads(path.read_text(encoding='utf-8'))
-                    if cache.get('fingerprint') == fingerprint and cache.get('diagnostics_version') == 3:
+                    if cache.get('fingerprint') == fingerprint and cache.get('diagnostics_version') == 4:
                         payload['diagnostics'] = cache['results']
                         return payload
                 except (OSError, ValueError, TypeError, KeyError):
@@ -111,11 +112,26 @@ class PrepareNineWorker(QThread):
             files = {(mix, comp): Path(payload['mixes'][mix]['paths'][comp])
                      for mix in MIXES for comp in COMPRESSIONS}
             report = measure_combinations(files)
+            # Input activity is always computed from the session's Original
+            # PCM. Thresholds come from validated JUCE physical readback,
+            # never from normalized parameter coordinates.
+            for mix in MIXES:
+                session_report = payload['mixes'][mix]['report']
+                original = files[(mix, 'original')]
+                for comp in ('gentle', 'firm'):
+                    key = mix + '/' + comp
+                    threshold_db = _threshold_from_report(session_report, comp)
+                    try:
+                        report['metrics'][key]['threshold_activity'] = (
+                            inspect_threshold_activity(original, threshold_db))
+                    except (OSError, ValueError, TypeError) as exc:
+                        report['metrics'][key]['threshold_activity'] = {
+                            'status':'unavailable', 'reason':str(exc)}
             payload['diagnostics'] = report
             folder.mkdir(parents=True, exist_ok=True)
             temp = path.with_suffix('.json.tmp')
             temp.write_text(json.dumps(
-                {'fingerprint': fingerprint, 'diagnostics_version': 3, 'results': report},
+                {'fingerprint': fingerprint, 'diagnostics_version': 4, 'results': report},
                 ensure_ascii=False), encoding='utf-8')
             temp.replace(path)
         except Exception as exc:
@@ -166,7 +182,7 @@ class UnifiedComparison(QWidget):
         brand.setStyleSheet('font-size:18px;font-weight:750;color:#f5f6fa;')
         header.addWidget(brand)
         header.addStretch()
-        ver = QLabel('v0.23.7')
+        ver = QLabel('v0.23.8')
         ver.setStyleSheet('color:#9da4b4;font-size:11px;')
         header.addWidget(ver)
         layout.addLayout(header)
@@ -233,6 +249,11 @@ class UnifiedComparison(QWidget):
         self.gentle_explanation.setStyleSheet(
             'color:#b9d6c6;font-size:11px;padding:5px 0;')
         layout.addWidget(self.gentle_explanation)
+        self.activity_inspector = QLabel('Activité du signal au seuil : en attente')
+        self.activity_inspector.setWordWrap(True)
+        self.activity_inspector.setStyleSheet(
+            'color:#b8c6ea;font-size:11px;padding:4px 0;')
+        layout.addWidget(self.activity_inspector)
         self.marker_title = QLabel('Passages à comparer · Original ↔ compression')
         self.marker_title.setStyleSheet('color:#aab7cf;font-size:11px;')
         layout.addWidget(self.marker_title)
@@ -414,6 +435,7 @@ class UnifiedComparison(QWidget):
         metrics = self._diagnostics.get('metrics', {}).get(key)
         if not metrics:
             self.gentle_explanation.setText('Gentle : diagnostic indisponible.')
+            self.activity_inspector.setText('Activité du signal au seuil : mesures indisponibles.')
             self._set_review_markers([])
             self.measure_status.setText('Mesures indisponibles : impossible de vérifier les différences WAV.')
             self._update_advisor()
@@ -430,6 +452,26 @@ class UnifiedComparison(QWidget):
                     if threshold is not None else ' · Seuil physique indisponible')
             self.gentle_explanation.setText('Pourquoi Gentle est-il discret? '
                                             + diagnosis['reason'] + info)
+        inspection_comp = self._active[1] if self._active[1] != 'original' else 'gentle'
+        inspection = self._diagnostics.get('metrics', {}).get(
+            self._active[0] + '/' + inspection_comp, {}).get('threshold_activity', {})
+        if inspection.get('status') == 'measured':
+            rms_difference = self._diagnostics.get('metrics', {}).get(
+                self._active[0] + '/' + inspection_comp, {}).get('rms_delta_db')
+            interpretation = interpret_activity(inspection, rms_difference)
+            self.activity_inspector.setText(
+                'Activité source au seuil ' + COMP_NAMES[inspection_comp]
+                + ' (' + str(inspection['threshold_db']) + ' dB) : '
+                + str(inspection['peak_above_threshold_pct']) + '% des fenêtres en crête · '
+                + str(inspection['rms_above_threshold_pct']) + '% en RMS · '
+                + 'plus longue séquence RMS : '
+                + str(inspection['longest_rms_run_ms']) + ' ms. '
+                + interpretation['message']
+                + ' (Ce ne sont PAS des valeurs de gain reduction FabFilter.)')
+        else:
+            self.activity_inspector.setText(
+                'Activité du signal au seuil : '
+                + inspection.get('reason', 'mesure non disponible') + '.')
         rms = metrics.get('rms_dbfs')
         peak = metrics.get('sample_peak_dbfs')
         crest = metrics.get('crest_db')
@@ -769,6 +811,7 @@ class UnifiedComparison(QWidget):
         self.file_status.setText('Fichier actif : en attente')
         self.measure_status.setText('Mesures WAV : en attente')
         self.gentle_explanation.setText('Gentle : diagnostic en attente')
+        self.activity_inspector.setText('Activité du signal au seuil : en attente')
         self._set_review_markers([])
         self._update_advisor()
         self.prepare.setVisible(False)
