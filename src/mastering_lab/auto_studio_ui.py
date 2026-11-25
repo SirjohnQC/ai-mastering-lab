@@ -821,6 +821,7 @@ class AutoStudioPage(QWidget):
         self.master_preflight_status.setTextInteractionFlags(Qt.TextSelectableByMouse)
         ml.addWidget(self.master_preflight_status)
         self._preflight_worker = None
+        self._last_preflight_report = None
         advanced_master = QPushButton('Réglages avancés et références →')
         advanced_master.setObjectName('secondary')
         advanced_master.clicked.connect(self._handoff_to_advanced_master)
@@ -880,6 +881,8 @@ class AutoStudioPage(QWidget):
             else:
                 self.master_description.setText(tr(lang,'source',name=self._master_input.name,
                                                    variant=self._master_mix_variant or 'original'))
+        self._refresh_master_report()
+        self._refresh_preflight_report()
         self._update_master_button()
 
     def _toggle_optional_tools(self):
@@ -1929,6 +1932,7 @@ class AutoStudioPage(QWidget):
         self.master_preflight.hide()
         self.master_preflight_status.clear()
         self._reset_master_preview()
+        self._last_preflight_report = None
         self.master_report.setText('')
         self.master_run.setEnabled(False)
         self.master_cancel.show()
@@ -1947,6 +1951,14 @@ class AutoStudioPage(QWidget):
         self.master_status.setText(stage)
         self.master_progress.setValue(percent)
 
+    def _refresh_master_report(self):
+        if not self._master_result:
+            return
+        from .master_report_i18n import format_master_result
+        status, report = format_master_result(self._master_result, self._language)
+        self.master_status.setText(status)
+        self.master_report.setText(report)
+
     def _master_done(self, result):
         self._master_result = result
         self._master_completed_key = self._master_running_key
@@ -1959,16 +1971,7 @@ class AutoStudioPage(QWidget):
         self.master_preflight.setEnabled(True)
         self._prepare_master_preview(result.get('file'))
         self.master_progress.setValue(100)
-        self.master_status.setText('✓  Contrôles QC réussis' if status == 'qc_pass'
-                                   else '⚠  Master créé, contrôle QC à revoir')
-        self.master_report.setText(
-            f"LUFS intégrés : {result['output_lufs']:.2f} (cible {result['target_lufs']:.1f})\n"
-            f"True peak : {result['output_true_peak_dbtp']:.2f} dBTP "
-            f"(plafond {result['target_true_peak_dbtp']:.1f})\n"
-            f"PCM 24-bit · {result['output']['sample_rate']} Hz · WAV stéréo\n"
-            f"{result['file']}\n" +
-            ('À vérifier : ' + '; '.join(result['qc_issues']) if result['qc_issues'] else
-             'QC technique OK. Écoute critique et validation album encore nécessaires.'))
+        self._refresh_master_report()
 
     def _run_release_preflight(self):
         if not self._master_is_processed():
@@ -1989,8 +1992,17 @@ class AutoStudioPage(QWidget):
     def _release_preflight_done(self, report):
         from .release_preflight import format_preflight
         self.master_preflight.setEnabled(True)
-        self.master_preflight_status.setText(format_preflight(report) +
-            '\nRapport JSON : ' + report.get('report_path', '(non enregistré)'))
+        self._last_preflight_report = report
+        self._refresh_preflight_report()
+
+    def _refresh_preflight_report(self):
+        report = getattr(self, '_last_preflight_report', None)
+        if not report:
+            return
+        from .release_preflight import format_preflight
+        prefix = 'JSON report: ' if self._language == 'en' else 'Rapport JSON : '
+        self.master_preflight_status.setText(format_preflight(report, language=self._language)
+            + '\n' + prefix + report.get('report_path', '(not saved)' if self._language == 'en' else '(non enregistré)'))
 
     def _release_preflight_failed(self, message):
         self.master_preflight.setEnabled(True)
