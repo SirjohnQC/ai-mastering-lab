@@ -217,7 +217,7 @@ class UnifiedComparison(QWidget):
         brand.setStyleSheet('font-size:18px;font-weight:750;color:#f5f6fa;')
         header.addWidget(brand)
         header.addStretch()
-        ver = QLabel('v0.24.0')
+        ver = QLabel('v0.24.1')
         ver.setStyleSheet('color:#9da4b4;font-size:11px;')
         header.addWidget(ver)
         layout.addLayout(header)
@@ -225,6 +225,9 @@ class UnifiedComparison(QWidget):
         self.recommendation.setWordWrap(True)
         self.recommendation.setStyleSheet('color:#c7b8ff;font-size:12px;')
         layout.addWidget(self.recommendation)
+        self.user_journey = QLabel('Choisis ton mix → compare la compression → écoute → ♥ → Mastering.')
+        self.user_journey.setStyleSheet('color:#aab5cb;font-size:11px;')
+        layout.addWidget(self.user_journey)
         section_mix = QLabel('1. Mixage')
         section_mix.setStyleSheet('font-size:14px;font-weight:700;color:#f3f3f7;')
         layout.addWidget(section_mix)
@@ -272,30 +275,50 @@ class UnifiedComparison(QWidget):
         self.waveform.clickedPosition.connect(self._waveform_seek)
         self.waveform.markerClicked.connect(self._jump_to_marker)
         layout.addWidget(self.waveform)
+        # Keep the default Compare screen music-focused. All detailed
+        # measurements remain available in a collapsible Advanced pane.
+        self.review_summary = QLabel('Les repères roses signalent les passages à comparer.')
+        self.review_summary.setWordWrap(True)
+        self.review_summary.setStyleSheet('color:#aeb7d0;font-size:11px;')
+        layout.addWidget(self.review_summary)
+        self.diagnostics_toggle = QPushButton('⚙ Diagnostics · Advanced (afficher)')
+        self.diagnostics_toggle.setObjectName('secondary')
+        self.diagnostics_toggle.setToolTip('Afficher chemins WAV, paramètres JUCE, seuils et analyses PCM')
+        self.diagnostics_toggle.clicked.connect(self._toggle_diagnostics)
+        layout.addWidget(self.diagnostics_toggle)
+        self.diagnostics_panel = QFrame(self)
+        self.diagnostics_panel.setObjectName('compressionDiagnostics')
+        self.diagnostics_panel.setStyleSheet(
+            'QFrame#compressionDiagnostics {background:#171923;border:1px solid #353948;border-radius:10px;}')
+        self.diagnostics_layout = QVBoxLayout(self.diagnostics_panel)
+        self.diagnostics_layout.setContentsMargins(10, 10, 10, 10)
+        self.diagnostics_layout.setSpacing(8)
+        self.diagnostics_panel.hide()
+        layout.addWidget(self.diagnostics_panel)
         self.file_status = QLabel('Fichier actif : en attente')
         self.file_status.setStyleSheet('color:#aab7cf;font-size:11px;')
-        layout.addWidget(self.file_status)
+        self.diagnostics_layout.addWidget(self.file_status)
         self.measure_status = QLabel('Mesures WAV : en attente')
         self.measure_status.setWordWrap(True)
         self.measure_status.setStyleSheet('color:#b8c1d3;font-size:11px;')
-        layout.addWidget(self.measure_status)
+        self.diagnostics_layout.addWidget(self.measure_status)
         self.smart_gentle_status = QLabel('Smart Gentle : essais en attente')
         self.smart_gentle_status.setWordWrap(True)
         self.smart_gentle_status.setStyleSheet('color:#d5c5f6;font-size:11px;')
-        layout.addWidget(self.smart_gentle_status)
+        self.diagnostics_layout.addWidget(self.smart_gentle_status)
         self.gentle_explanation = QLabel('Gentle : diagnostic en attente')
         self.gentle_explanation.setWordWrap(True)
         self.gentle_explanation.setStyleSheet(
             'color:#b9d6c6;font-size:11px;padding:5px 0;')
-        layout.addWidget(self.gentle_explanation)
+        self.diagnostics_layout.addWidget(self.gentle_explanation)
         self.activity_inspector = QLabel('Activité du signal au seuil : en attente')
         self.activity_inspector.setWordWrap(True)
         self.activity_inspector.setStyleSheet(
             'color:#b8c6ea;font-size:11px;padding:4px 0;')
-        layout.addWidget(self.activity_inspector)
+        self.diagnostics_layout.addWidget(self.activity_inspector)
         self.marker_title = QLabel('Passages à comparer · Original ↔ compression')
         self.marker_title.setStyleSheet('color:#aab7cf;font-size:11px;')
-        layout.addWidget(self.marker_title)
+        self.diagnostics_layout.addWidget(self.marker_title)
         marker_row = QHBoxLayout()
         self.marker_buttons = []
         for index in range(3):
@@ -305,10 +328,10 @@ class UnifiedComparison(QWidget):
             button.clicked.connect(lambda _=False, i=index: self._jump_to_marker(i))
             self.marker_buttons.append(button)
             marker_row.addWidget(button, 1)
-        layout.addLayout(marker_row)
+        self.diagnostics_layout.addLayout(marker_row)
         self._active_markers = []
         self._marker_reference = None
-        advisor_title = QLabel('3. Suggestion de compression (mesures WAV)')
+        advisor_title = QLabel('3. Recommandation IA · Compression')
         advisor_title.setStyleSheet('font-size:13px;font-weight:700;color:#f3f3f7;')
         layout.addWidget(advisor_title)
         advisory_row = QHBoxLayout()
@@ -446,11 +469,30 @@ class UnifiedComparison(QWidget):
                 button.setEnabled(False)
                 button.setVisible(False)
         comparison = COMP_NAMES.get(self._marker_reference or '', '')
+        self.review_summary.setText(
+            ('✦ ' + str(len(self._active_markers))
+             + ' passages à écouter — repères roses sur la waveform.')
+            if self._active_markers else
+            'Aucun passage particulièrement affecté : compare à l’oreille.')
         self.marker_title.setText(
             'Repères roses : passages à comparer avec ' + comparison
             + ' (différences PCM, pas nécessairement des défauts)'
             if self._active_markers else
             'Aucun repère mesurable pour ce mix : essaye Gentle ou Firm.')
+
+    def _toggle_diagnostics(self):
+        is_open = not self.diagnostics_panel.isVisible()
+        self.diagnostics_panel.setVisible(is_open)
+        self.diagnostics_toggle.setText(
+            '⚙ Diagnostics · Advanced (masquer)' if is_open
+            else '⚙ Diagnostics · Advanced (afficher)')
+
+    def set_diagnostics_visible(self, enabled):
+        """Allow the host app to open the local diagnostics directly."""
+        self.diagnostics_panel.setVisible(bool(enabled))
+        self.diagnostics_toggle.setText(
+            '⚙ Diagnostics · Advanced (masquer)' if enabled
+            else '⚙ Diagnostics · Advanced (afficher)')
 
     def _waveform_seek(self, fraction):
         if not self._players:return
@@ -905,6 +947,7 @@ class UnifiedComparison(QWidget):
         self.waveform.setData(None)
         self.file_status.setText('Fichier actif : en attente')
         self.measure_status.setText('Mesures WAV : en attente')
+        self.review_summary.setText('Les repères roses signalent les passages à comparer.')
         self.gentle_explanation.setText('Gentle : diagnostic en attente')
         self.smart_gentle_status.setText('Smart Gentle : essais en attente')
         self.activity_inspector.setText('Activité du signal au seuil : en attente')
