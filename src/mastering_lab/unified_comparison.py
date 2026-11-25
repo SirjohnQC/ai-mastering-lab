@@ -15,6 +15,7 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushBu
 from .waveform_preview import WaveformStrip
 from .compare_visual_diagnostics import measure_combinations
 from .compression_advisor import suggest_compression
+from .ai_compression_decision import decide_compressions, _safe_choice
 from .compression_explainer import explain_gentle, _threshold_from_report
 from .compression_activity import inspect_threshold_activity, interpret_activity
 from .pro_c3_song_preview import make_preview, audition_files, verify_source, save_choice
@@ -71,7 +72,7 @@ class PrepareNineWorker(QThread):
                 try:
                     cache = json.loads(manifest.read_text(encoding='utf-8'))
                     if cache.get('fingerprint') == fingerprint and _cache_valid(self.root, cache.get('result', {})):
-                        self.completed.emit(self._attach_diagnostics(dict(cache['result'], cached=True), fingerprint))
+                        self.completed.emit(self._attach_ai_decisions(self._attach_diagnostics(dict(cache['result'], cached=True), fingerprint), fingerprint))
                         return
                 except (OSError, ValueError, TypeError, KeyError):
                     pass
@@ -92,7 +93,7 @@ class PrepareNineWorker(QThread):
                     temp.replace(manifest)
                 except (OSError, TypeError, ValueError):
                     pass  # Cache failure cannot invalidate successful audio renders.
-            self.completed.emit(self._attach_diagnostics(payload, fingerprint))
+            self.completed.emit(self._attach_ai_decisions(self._attach_diagnostics(payload, fingerprint), fingerprint))
         except Exception as exc:
             self.completed.emit({'status':'failed', 'error': f'{type(exc).__name__}: {exc}'})
 
@@ -138,6 +139,39 @@ class PrepareNineWorker(QThread):
             payload['diagnostics_error'] = str(exc)
         return payload
 
+    def _attach_ai_decisions(self, payload, fingerprint):
+        """One local model request per unchanged 3-mix session, never an audio upload."""
+        if payload.get('status') != 'ready':
+            return payload
+        folder = self.root / 'settings'
+        path = folder / 'pro_c3_unified_ai_compression.json'
+        # Cache is advisory only; the widget revalidates any selected option
+        # against CURRENT PCM eligibility before offering audition.
+        if path.is_file():
+            try:
+                cache = json.loads(path.read_text(encoding='utf-8'))
+                if (cache.get('fingerprint') == fingerprint and
+                        cache.get('decision_schema') == 1 and
+                        cache.get('report') and
+                        cache['report'].get('mode') in ('hermes','pcm_fallback')):
+                    payload['ai_compression'] = cache['report']
+                    return payload
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+        decision = decide_compressions(payload.get('diagnostics', {}).get('metrics', {}),
+                                       {mix:payload['mixes'][mix]['report'] for mix in MIXES})
+        payload['ai_compression'] = decision
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            temp = path.with_suffix('.json.tmp')
+            temp.write_text(json.dumps({'fingerprint':fingerprint,
+                                        'decision_schema':1,'report':decision},
+                                       ensure_ascii=False),encoding='utf-8')
+            temp.replace(path)
+        except (OSError, TypeError, ValueError):
+            pass
+        return payload
+
 
 class UnifiedComparison(QWidget):
     """Inline Qt widget; all nine media clocks run muted except the active one."""
@@ -151,6 +185,7 @@ class UnifiedComparison(QWidget):
         self._files = {}
         self._reports = {}
         self._diagnostics = {}
+        self._ai_compression = {}
         self._intensity = 'balanced'
         self._advisor_choice = 'original'
         self._sources = {}
@@ -182,7 +217,7 @@ class UnifiedComparison(QWidget):
         brand.setStyleSheet('font-size:18px;font-weight:750;color:#f5f6fa;')
         header.addWidget(brand)
         header.addStretch()
-        ver = QLabel('v0.23.9')
+        ver = QLabel('v0.24.0')
         ver.setStyleSheet('color:#9da4b4;font-size:11px;')
         header.addWidget(ver)
         layout.addLayout(header)
@@ -286,6 +321,7 @@ class UnifiedComparison(QWidget):
         layout.addLayout(advisory_row)
         self.advisor_status = QLabel('Suggestion disponible après analyse des WAV. Ce n’est pas un choix Hermes.')
         self.advisor_status.setWordWrap(True)
+        self.advisor_status.setTextFormat(Qt.PlainText)
         self.advisor_status.setStyleSheet('color:#c7b8ff;font-size:11px;')
         layout.addWidget(self.advisor_status)
         self.audition_suggestion = QPushButton('▶ Écouter la suggestion (sans approuver)')
@@ -352,6 +388,7 @@ class UnifiedComparison(QWidget):
         self._files.clear()
         self._reports.clear()
         self._diagnostics = {}
+        self._ai_compression = {}
         self._marker_reference = None
         self._advisor_choice = 'original'
         self._approved = None
@@ -573,12 +610,24 @@ class UnifiedComparison(QWidget):
             self.advisor_status.setText('Analyse en attente. La suggestion ne modifie aucun son.')
             return
         result = suggest_compression(metrics, mix, self._intensity)
-        self._advisor_choice = result['variant']
-        self.audition_suggestion.setEnabled((mix, self._advisor_choice) in self._files)
-        label = COMP_NAMES[self._advisor_choice]
-        self.advisor_status.setText('✦ Analyse PCM : ' + MIX_NAMES[mix] + ' + ' + label
-                                    + ' · ' + result['reason']
-                                    + ' Suggestion seulement : ♥ requis pour le mastering.')
+        fallback_choice = result['variant']
+        key = mix + '/' + self._intensity
+        record = self._ai_compression.get('choices', {}).get(key, {})
+        # Do not trust editable local AI cache (or an LLM response) blindly.
+        _scored, allowed = _safe_choice(metrics, self._reports, mix, self._intensity)
+        ai_variant = record.get('selected')
+        if ai_variant in allowed and self._ai_compression.get('mode') == 'hermes':
+            selected, prefix = ai_variant, '🧠 Hermes local'
+            explanation = str(record.get('reason', 'Suggestion basée sur les mesures.'))[:160]
+        else:
+            selected = fallback_choice if fallback_choice in allowed else 'original'
+            prefix = '✦ Conseiller PCM'
+            explanation = result['reason']
+        self._advisor_choice = selected
+        self.audition_suggestion.setEnabled((mix, selected) in self._files)
+        self.advisor_status.setText(prefix + ' : ' + MIX_NAMES[mix] + ' + '
+                                    + COMP_NAMES[selected] + ' · ' + explanation
+                                    + ' · Suggestion seulement : ♥ requis pour le mastering.')
 
     def preview_suggestion(self):
         # An audition never implicitly approves mastering. This button is a
@@ -615,12 +664,17 @@ class UnifiedComparison(QWidget):
         self._files = {(mix, comp): Path(result['mixes'][mix]['paths'][comp]) for mix in MIXES for comp in COMPRESSIONS}
         self._reports = {mix:result['mixes'][mix]['report'] for mix in MIXES}
         self._diagnostics = result.get('diagnostics', {})
+        self._ai_compression = result.get('ai_compression', {})
         # Only prepare synchronized playback once all nine immutable copies exist.
         self._setup_players()
         self._refresh_gentle_gate()
         self._update_active_diagnostics()
         self.prepare.setVisible(False)
         diagnostic_note = ' Mesures calculées sur les WAV.' if self._diagnostics else ' ⚠ Diagnostic indisponible : ' + str(result.get('diagnostics_error','erreur non précisée'))
+        if self._ai_compression.get('mode') == 'hermes':
+            diagnostic_note += ' Hermes local : propositions de compression disponibles.'
+        else:
+            diagnostic_note += ' Conseiller PCM utilisé (Hermes non disponible ou réponse refusée).'
         self.status.setText(('9 combinaisons adaptatives récupérées du cache.' if result.get('cached') else '9 combinaisons préparées avec grille Pro-C 3 adaptée au mix.') + diagnostic_note + ' ♥ approuve pour le mastering.')
         self.prepared.emit(True)
 
