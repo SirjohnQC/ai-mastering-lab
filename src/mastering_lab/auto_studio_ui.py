@@ -695,7 +695,7 @@ class AutoStudioPage(QWidget):
         rv.addWidget(self.optional_tools_button)
         rv.addWidget(self.optional_tools_panel)
         self._select('balanced')
-        self._apply_language()
+        # Apply translations only after Mastering widgets are constructed.
         secondary = QHBoxLayout()
         self.gen2 = QPushButton('✦  Améliorer avec Gen 2')
         self.gen2.setObjectName('secondary')
