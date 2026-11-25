@@ -211,6 +211,8 @@ def save_choice(root, report, selected):
     """Store a MANUAL session choice; do not train Hermes on it."""
     if selected not in ('original','gentle','firm'):
         raise ValueError('Choix inconnu.')
+    if selected == 'gentle' and report.get('smart_gentle', {}).get('status') == 'fallback_original':
+        raise ValueError('Gentle est un repli Original : approbation Gentle refusée.')
     audition_files(root, report)
     path = (Path(root).resolve() / 'settings/pro_c3_song_preview_choices.jsonl')
     path.parent.mkdir(parents=True, exist_ok=True)
