@@ -102,7 +102,7 @@ class PrepareNineWorker(QThread):
             if path.is_file():
                 try:
                     cache = json.loads(path.read_text(encoding='utf-8'))
-                    if cache.get('fingerprint') == fingerprint and cache.get('diagnostics_version') == 1:
+                    if cache.get('fingerprint') == fingerprint and cache.get('diagnostics_version') == 2:
                         payload['diagnostics'] = cache['results']
                         return payload
                 except (OSError, ValueError, TypeError, KeyError):
@@ -114,7 +114,7 @@ class PrepareNineWorker(QThread):
             folder.mkdir(parents=True, exist_ok=True)
             temp = path.with_suffix('.json.tmp')
             temp.write_text(json.dumps(
-                {'fingerprint': fingerprint, 'diagnostics_version': 1, 'results': report},
+                {'fingerprint': fingerprint, 'diagnostics_version': 2, 'results': report},
                 ensure_ascii=False), encoding='utf-8')
             temp.replace(path)
         except Exception as exc:
@@ -165,7 +165,7 @@ class UnifiedComparison(QWidget):
         brand.setStyleSheet('font-size:18px;font-weight:750;color:#f5f6fa;')
         header.addWidget(brand)
         header.addStretch()
-        ver = QLabel('v0.23.4')
+        ver = QLabel('v0.23.5')
         ver.setStyleSheet('color:#9da4b4;font-size:11px;')
         header.addWidget(ver)
         layout.addLayout(header)
@@ -367,6 +367,14 @@ class UnifiedComparison(QWidget):
                              + str(scenario.get('threshold'))
                              + ', ratio=' + str(scenario.get('ratio'))
                              + ' (normalisés)')
+        window = metrics.get('window_analysis', {})
+        if window.get('status') == 'measured':
+            parts.append('Passages forts vs calmes : '
+                         + str(window['loud_relative_to_quiet_db']) + ' dB (comparaison PCM)')
+            if window.get('overcompression_warning'):
+                parts.append('⚠ Forte réduction relative des passages forts : écoute les transitoires')
+            if window.get('effect_nearly_inaudible_warning'):
+                parts.append('Effet très discret dans les fenêtres mesurées')
         self.measure_status.setText('  |  '.join(parts))
         self._update_advisor()
 
