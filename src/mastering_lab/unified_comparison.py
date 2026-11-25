@@ -15,6 +15,7 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushBu
 from .waveform_preview import WaveformStrip
 from .compare_visual_diagnostics import measure_combinations
 from .compression_advisor import suggest_compression
+from .compression_explainer import explain_gentle
 from .pro_c3_song_preview import make_preview, audition_files, verify_source, save_choice
 from .pro_c3_loudness_match import preview_volume, BASE_VOLUME
 
@@ -165,7 +166,7 @@ class UnifiedComparison(QWidget):
         brand.setStyleSheet('font-size:18px;font-weight:750;color:#f5f6fa;')
         header.addWidget(brand)
         header.addStretch()
-        ver = QLabel('v0.23.6')
+        ver = QLabel('v0.23.7')
         ver.setStyleSheet('color:#9da4b4;font-size:11px;')
         header.addWidget(ver)
         layout.addLayout(header)
@@ -227,6 +228,11 @@ class UnifiedComparison(QWidget):
         self.measure_status.setWordWrap(True)
         self.measure_status.setStyleSheet('color:#b8c1d3;font-size:11px;')
         layout.addWidget(self.measure_status)
+        self.gentle_explanation = QLabel('Gentle : diagnostic en attente')
+        self.gentle_explanation.setWordWrap(True)
+        self.gentle_explanation.setStyleSheet(
+            'color:#b9d6c6;font-size:11px;padding:5px 0;')
+        layout.addWidget(self.gentle_explanation)
         self.marker_title = QLabel('Passages à comparer · Original ↔ compression')
         self.marker_title.setStyleSheet('color:#aab7cf;font-size:11px;')
         layout.addWidget(self.marker_title)
@@ -407,10 +413,23 @@ class UnifiedComparison(QWidget):
             self.waveform.setData(np.asarray(wave, dtype=np.float32))
         metrics = self._diagnostics.get('metrics', {}).get(key)
         if not metrics:
+            self.gentle_explanation.setText('Gentle : diagnostic indisponible.')
             self._set_review_markers([])
             self.measure_status.setText('Mesures indisponibles : impossible de vérifier les différences WAV.')
             self._update_advisor()
             return
+        diagnosis = explain_gentle(self._diagnostics.get('metrics', {}),
+                                  self._active[0],
+                                  self._reports.get(self._active[0], {}))
+        if diagnosis.get('status') == 'unavailable':
+            self.gentle_explanation.setText('Gentle : mesures insuffisantes pour expliquer son effet.')
+        else:
+            details = diagnosis.get('evidence', {})
+            threshold = details.get('threshold_readback_db')
+            info = (' · Seuil Pro-C 3 relu : ' + str(threshold) + ' dB'
+                    if threshold is not None else ' · Seuil physique indisponible')
+            self.gentle_explanation.setText('Pourquoi Gentle est-il discret? '
+                                            + diagnosis['reason'] + info)
         rms = metrics.get('rms_dbfs')
         peak = metrics.get('sample_peak_dbfs')
         crest = metrics.get('crest_db')
@@ -749,6 +768,7 @@ class UnifiedComparison(QWidget):
         self.waveform.setData(None)
         self.file_status.setText('Fichier actif : en attente')
         self.measure_status.setText('Mesures WAV : en attente')
+        self.gentle_explanation.setText('Gentle : diagnostic en attente')
         self._set_review_markers([])
         self._update_advisor()
         self.prepare.setVisible(False)
