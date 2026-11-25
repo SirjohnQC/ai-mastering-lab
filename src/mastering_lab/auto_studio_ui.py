@@ -399,10 +399,12 @@ class AutoStudioPage(QWidget):
         title = QLabel('Ta musique, ton prochain mix.')
         title.setStyleSheet('font-size:26px;font-weight:750;')
         v.addWidget(title)
+        self.import_headline = title
         explanation = QLabel('Commence avec les stems d’une chanson. Les fichiers stéréo et albums complets suivront dans un prochain module.')
         explanation.setStyleSheet('color:#abb5c8;')
         explanation.setWordWrap(True)
         v.addWidget(explanation)
+        self.import_explanation = explanation
         self.song_title_import = QLineEdit()
         self.song_title_import.setObjectName('songTitleImport')
         self.song_title_import.setPlaceholderText(tr(self._language, 'song_title'))
@@ -441,17 +443,20 @@ class AutoStudioPage(QWidget):
         big = QLabel('On s’occupe du mixage. 🎸')
         big.setStyleSheet('font-size:24px;font-weight:700;')
         pv.addWidget(big)
+        self.producing_headline = big
         self.progress_text = QLabel('Préparation…')
         self.progress_text.setWordWrap(True)
         pv.addWidget(self.progress_text)
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)  # Honest indeterminate progress.
         pv.addWidget(self.progress)
-        pv.addWidget(QLabel('Les stems originaux ne seront pas modifiés.'))
+        self.producing_safe = QLabel('Les stems originaux ne seront pas modifiés.')
+        pv.addWidget(self.producing_safe)
         cancel = QPushButton('Annuler le traitement')
         cancel.setObjectName('secondary')
         cancel.clicked.connect(self.stems._cancel_guided_production)
         pv.addWidget(cancel)
+        self.cancel_production_button = cancel
         pv.addStretch(2)
         self.stack.addWidget(progress)
 
@@ -832,6 +837,7 @@ class AutoStudioPage(QWidget):
         caution.setWordWrap(True)
         caution.setStyleSheet('color:#a0aabb;font-size:12px;')
         ml.addWidget(caution)
+        self.master_caution = caution
         ml.addStretch(2)
         self.stack.addWidget(master)
         self._apply_language()
@@ -857,6 +863,17 @@ class AutoStudioPage(QWidget):
         self.pick_stems_button.setText(tr(lang,'pick_stems'))
         self.pick_folder_button.setText(tr(lang,'pick_folder'))
         self.song_title_import.setPlaceholderText(tr(lang,'song_title'))
+        self.stem_list_heading.setText(tr(lang,'selected_stems'))
+        self.import_headline.setText(tr(lang,'import_headline'))
+        self.import_explanation.setText(tr(lang,'import_explanation'))
+        self.producing_headline.setText(tr(lang,'producing_headline'))
+        self.producing_safe.setText(tr(lang,'producing_safe'))
+        self.cancel_production_button.setText(tr(lang,'cancel_production'))
+        self.master_caution.setText(tr(lang,'master_caution'))
+        if not self.stems.rows:
+            self.file_info.setText(tr(lang,'no_stems'))
+        if self.stack.currentIndex() == 1 and self.progress.value() == 0:
+            self.progress_text.setText(tr(lang,'producing_wait'))
         self.produce_btn.setText(tr(lang,'auto_produce'))
         self.change_music.setText(tr(lang,'change_music'))
         self.continue_btn.setText(tr(lang,'continue',mix=VARIANT_LABELS.get(self._selected, 'Balanced')))
@@ -1061,7 +1078,7 @@ class AutoStudioPage(QWidget):
             card.lufs.setText('— LUFS')
         self.gen2.setVisible(True)
         self._select('balanced')
-        self.file_info.setText(f'✓  {count} stems chargés  ·  {label}' if count else 'Aucun stem chargé')
+        self.file_info.setText(tr(self._language,'loaded_stems',count=count,label=label) if count else tr(self._language,'no_stems'))
         self._refresh_stem_list()
         self.produce_btn.setEnabled(count > 0)
         self._go(0)
@@ -1855,7 +1872,7 @@ class AutoStudioPage(QWidget):
         self.master_run.setText(tr(self._language,
                                    'master_done' if processed else 'master_action'))
         if processed:
-            self.master_status.setText('✓  Master déjà créé. Aucun nouveau traitement nécessaire.')
+            self.master_status.setText(tr(self._language,'master_already'))
 
     def _continue_mastering(self):
         """Surface any navigation exception instead of silent no-op."""
@@ -1918,7 +1935,7 @@ class AutoStudioPage(QWidget):
         if self._master_worker is not None and self._master_worker.isRunning():
             return
         if self._master_input is None or not self._master_input.is_file():
-            QMessageBox.warning(self, 'Source manquante', 'Sélectionne un mixage WAV avant Auto Master.')
+            QMessageBox.warning(self, 'Auto Master', tr(self._language,'missing_master_input'))
             return
         if self._master_is_processed():
             self._update_master_button()
@@ -1938,7 +1955,7 @@ class AutoStudioPage(QWidget):
         self.master_cancel.show()
         self.master_cancel.setEnabled(True)
         self.master_progress.setValue(0)
-        self.master_status.setText('Vérification de la source et du moteur audio…')
+        self.master_status.setText(tr(self._language,'master_starting'))
         worker = AutoMasterWorker(self._master_input, outdir, self,
             song_title=self._master_song_title, mix_variant=self._master_mix_variant)
         self._master_worker = worker
@@ -1981,7 +1998,7 @@ class AutoStudioPage(QWidget):
             return
         output = self._master_result['file']
         self.master_preflight.setEnabled(False)
-        self.master_preflight_status.setText('Analyse du WAV exporté en cours…')
+        self.master_preflight_status.setText(tr(self._language,'master_preflight_running'))
         worker = ReleasePreflightWorker(output, self)
         self._preflight_worker = worker
         worker.completed.connect(self._release_preflight_done)
@@ -2006,21 +2023,21 @@ class AutoStudioPage(QWidget):
 
     def _release_preflight_failed(self, message):
         self.master_preflight.setEnabled(True)
-        self.master_preflight_status.setText('Contrôle impossible : ' + message)
+        self.master_preflight_status.setText(tr(self._language,'master_preflight_error',error=message))
 
     def _master_failed(self, message):
         self.master_cancel.hide()
         self.master_cancel.setEnabled(True)
         self._master_running_key = None
         self._update_master_button()
-        self.master_status.setText('Mastering arrêté')
+        self.master_status.setText(tr(self._language,'master_stopped'))
         self.master_report.setText(str(message))
         QMessageBox.warning(self, 'Auto Master', str(message))
 
     def _cancel_master(self):
         if self._master_worker is not None and self._master_worker.isRunning():
             self._master_worker.cancel()
-            self.master_status.setText('Annulation demandée…')
+            self.master_status.setText(tr(self._language,'master_cancelling'))
             self.master_cancel.setEnabled(False)
 
     @staticmethod
@@ -2157,7 +2174,7 @@ class AutoStudioPage(QWidget):
     def _listen_master(self):
         """Play / pause real QMediaPlayer; never render another master on click."""
         if not self._master_preview_path or not Path(self._master_preview_path).is_file():
-            QMessageBox.warning(self, 'Master introuvable', 'Le fichier master n’est plus disponible.')
+            QMessageBox.warning(self, 'Mastering', tr(self._language,'missing_master_file'))
             return
         try:
             from PySide6.QtMultimedia import QMediaPlayer
