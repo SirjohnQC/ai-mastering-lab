@@ -138,20 +138,81 @@ def run_preflight(path, *, write_report=True):
     return analyze_wav(path, measure_loudness=lambda p: _measure(ffmpeg, p), write_report=write_report)
 
 
-def format_preflight(result):
-    f = result['file']; a = result['audio']; loud = result['loudness']
-    lines = [f"Statut : {result['status']}",
-             f"WAV : {f['subtype']} · {f['sample_rate']} Hz · {f['channels']} canaux · {f['duration_seconds']:.1f} s",
-             'Sample peak : ' + (f"{a['sample_peak_dbfs']:.2f} dBFS" if a['sample_peak_dbfs'] is not None else 'silence'),
-             f"Frames au maximum numérique : {a['clipped_frames']}"]
+def format_preflight(result, language='fr'):
+    """Localize the user-visible technical summary, not measurement or JSON data."""
+    english = language == 'en'
+    f, a, loud = result['file'], result['audio'], result['loudness']
+    status = result['status']
+    if english:
+        statuses = {'technical_pass':'Technical pass',
+                    'technical_pass_with_notes':'Technical pass with notes',
+                    'needs_review':'Needs review'}
+        lines = [f"Status: {statuses.get(status, status)}",
+                 f"WAV: {f['subtype']} · {f['sample_rate']} Hz · {f['channels']} channels · {f['duration_seconds']:.1f} s",
+                 'Sample peak: ' + (f"{a['sample_peak_dbfs']:.2f} dBFS" if a['sample_peak_dbfs'] is not None else 'silence'),
+                 f"Frames at digital maximum: {a['clipped_frames']}"]
+    else:
+        lines = [f"Statut : {status}",
+                 f"WAV : {f['subtype']} · {f['sample_rate']} Hz · {f['channels']} canaux · {f['duration_seconds']:.1f} s",
+                 'Sample peak : ' + (f"{a['sample_peak_dbfs']:.2f} dBFS" if a['sample_peak_dbfs'] is not None else 'silence'),
+                 f"Frames au maximum numérique : {a['clipped_frames']}"]
     if loud:
-        lines += [f"Loudness intégré : {loud['integrated_lufs']:.2f} LUFS",
-                  f"True peak : {loud['true_peak_dbtp']:.2f} dBTP"]
-    lines += ['Silence : début %.2f s / fin %.2f s' % (a['initial_silence_seconds'], a['final_silence_seconds'])]
-    if result['issues']:
-        lines.append('À CORRIGER : ' + ' | '.join(result['issues']))
-    if result['warnings']:
-        lines.append('À VÉRIFIER : ' + ' | '.join(result['warnings']))
-    lines += ['Ce rapport ne certifie pas une publication Spotify/DistroKid.',
-              'Avant publication : écoute complète, cohérence album, titres/crédits, artwork et droits.']
-    return '\n'.join(lines)
+        lines.extend([
+            ('Integrated loudness' if english else 'Loudness intégré')
+            + f": {loud['integrated_lufs']:.2f} LUFS",
+            f"True peak: {loud['true_peak_dbtp']:.2f} dBTP"])
+    if english:
+        lines.append('Silence: start %.2f s / end %.2f s' %
+                     (a['initial_silence_seconds'], a['final_silence_seconds']))
+        if result['issues']:
+            lines.append('ISSUES: ' + ' | '.join(_issue_to_english(v) for v in result['issues']))
+        if result['warnings']:
+            lines.append('WARNINGS: ' + ' | '.join(_issue_to_english(v) for v in result['warnings']))
+        lines.extend(['This report does not certify Spotify/DistroKid publication.',
+                      'Before release: listen throughout, verify album coherence, credits, artwork and rights.'])
+    else:
+        lines.append('Silence : début %.2f s / fin %.2f s' %
+                     (a['initial_silence_seconds'], a['final_silence_seconds']))
+        if result['issues']:
+            lines.append('À CORRIGER : ' + ' | '.join(result['issues']))
+        if result['warnings']:
+            lines.append('À VÉRIFIER : ' + ' | '.join(result['warnings']))
+        lines.extend(['Ce rapport ne certifie pas une publication Spotify/DistroKid.',
+                      'Avant publication : écoute complète, cohérence album, titres/crédits, artwork et droits.'])
+    return '\\n'.join(lines)
+
+
+def _issue_to_english(message):
+    """Translate known preflight messages, preserving their measured values."""
+    import re
+    text = str(message)
+    mapping = (
+      ('True peak supérieur à −1 dBTP : vérifier l’encodage avec pertes.',
+       'True peak exceeds -1 dBTP: verify lossy encoding.'),
+      ('Pour un export master haute résolution, préférer PCM 24 bits.',
+       'Prefer 24-bit PCM for a high-resolution master.'),
+      ('Durée inférieure à 10 secondes : vérifier que le morceau est complet.',
+       'Duration under 10 seconds: verify the track is complete.'),
+      ('LUFS et true peak non mesurés : FFmpeg requis pour validation complète.',
+       'LUFS and true peak not measured: FFmpeg is required for full validation.'),
+      ('Le WAV semble entièrement silencieux (seuil −60 dBFS).',
+       'The WAV appears silent (-60 dBFS threshold).'),
+      ('Échantillons non finis détectés.',
+       'Non-finite samples detected.'),
+    )
+    for original, translated in mapping:
+        if text == original:
+            return translated
+    patterns = (
+      (r'^Silence initial prolongé : (.+) s\\.$', 'Extended leading silence: {} s.'),
+      (r'^Silence final prolongé : (.+) s\\.$', 'Extended trailing silence: {} s.'),
+      (r'^Fréquence inhabituelle pour la distribution : (.+) Hz\\.$', 'Unusual sample rate for distribution: {} Hz.'),
+      (r'^(\\d+) frame\\(s\\) atteignent le maximum numérique : risque de clipping\\.$',
+       '{} frames reached the digital maximum: clipping risk.'),
+    )
+    for pattern, template in patterns:
+        match = re.match(pattern, text)
+        if match:
+            return template.format(*match.groups())
+    # Never silently invent a translation for a diagnostic we cannot parse.
+    return 'Original diagnostic: ' + text
