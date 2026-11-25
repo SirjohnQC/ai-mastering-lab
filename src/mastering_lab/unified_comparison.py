@@ -218,6 +218,7 @@ class UnifiedComparison(QWidget):
         self.waveform.setFixedHeight(64)
         self.waveform.setActive(True)
         self.waveform.clickedPosition.connect(self._waveform_seek)
+        self.waveform.markerClicked.connect(self._jump_to_marker)
         layout.addWidget(self.waveform)
         self.file_status = QLabel('Fichier actif : en attente')
         self.file_status.setStyleSheet('color:#aab7cf;font-size:11px;')
@@ -240,6 +241,7 @@ class UnifiedComparison(QWidget):
             marker_row.addWidget(button, 1)
         layout.addLayout(marker_row)
         self._active_markers = []
+        self._marker_reference = None
         advisor_title = QLabel('3. Suggestion de compression (mesures WAV)')
         advisor_title.setStyleSheet('font-size:13px;font-weight:700;color:#f3f3f7;')
         layout.addWidget(advisor_title)
@@ -319,6 +321,7 @@ class UnifiedComparison(QWidget):
         self._files.clear()
         self._reports.clear()
         self._diagnostics = {}
+        self._marker_reference = None
         self._advisor_choice = 'original'
         self._approved = None
         self._active = (self._active[0], 'original')
@@ -356,6 +359,10 @@ class UnifiedComparison(QWidget):
             isinstance(item.get('seek_ms'), int) and
             0 <= item['seek_ms'] <= self._max_ms
         ]
+        self.waveform.setMarkers([
+            item['source_ms'] / max(1, self._max_ms)
+            for item in self._active_markers
+        ])
         for index, button in enumerate(self.marker_buttons):
             if index < len(self._active_markers):
                 item = self._active_markers[index]
@@ -370,10 +377,12 @@ class UnifiedComparison(QWidget):
             else:
                 button.setEnabled(False)
                 button.setVisible(False)
+        comparison = COMP_NAMES.get(self._marker_reference or '', '')
         self.marker_title.setText(
-            'Passages suggérés (effet PCM mesuré, pas nécessairement un défaut) :'
+            'Repères roses : passages à comparer avec ' + comparison
+            + ' (différences PCM, pas nécessairement des défauts)'
             if self._active_markers else
-            'Aucun passage particulièrement affecté à signaler.')
+            'Aucun repère mesurable pour ce mix : essaye Gentle ou Firm.')
 
     def _waveform_seek(self, fraction):
         if not self._players:return
@@ -424,7 +433,28 @@ class UnifiedComparison(QWidget):
                              + ', ratio=' + str(scenario.get('ratio'))
                              + ' (normalisés)')
         window = metrics.get('window_analysis', {})
-        self._set_review_markers(window.get('review_markers', []) if self._active[1] != 'original' else [])
+        # Even in Original, show where the recommended compression changes the
+        # signal so users can start on Original, jump, then switch Gentle/Firm.
+        marker_variant = self._active[1]
+        if marker_variant == 'original':
+            candidates = ('gentle', 'firm')
+            available = [
+                (variant, self._diagnostics.get('metrics', {})
+                 .get(self._active[0] + '/' + variant, {})
+                 .get('window_analysis', {}).get('review_markers', []))
+                for variant in candidates
+            ]
+            marker_variant = next(
+                (variant for variant, items in available if items), None)
+            if marker_variant:
+                window_for_markers = self._diagnostics.get('metrics', {}).get(
+                    self._active[0] + '/' + marker_variant, {}).get('window_analysis', {})
+            else:
+                window_for_markers = {}
+        else:
+            window_for_markers = window
+        self._marker_reference = marker_variant
+        self._set_review_markers(window_for_markers.get('review_markers', []))
         if window.get('status') == 'measured':
             parts.append('Passages forts vs calmes : '
                          + str(window['loud_relative_to_quiet_db']) + ' dB (comparaison PCM)')
