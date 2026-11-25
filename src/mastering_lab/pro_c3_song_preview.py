@@ -18,6 +18,8 @@ from .pro_c3_parameter_validation import prepare_scenario, validate_readback, SC
 from .pro_c3_testbench import _verified_plugin
 from .pro_c3_loudness_match import build_playback_matching
 from .adaptive_pro_c3 import prepare_adaptive
+from .pro_c3_parameter_validation import prepare_discrete_scenario
+from .smart_gentle import gentle_candidates, evaluate_gentle, choose_gentle
 
 MIN_FRAMES, MAX_FRAMES, RATE = 48000 * 2, 48000 * 600, 48000
 
@@ -62,7 +64,7 @@ def verify_output(path, source_info, tail_samples):
             'extra_tail_frames': int(delta), 'sample_peak_dbfs': round(20 * math.log10(max(peak, 1e-12)), 2)}
 
 
-def make_preview(root, source, *, host=None, plugin=None, runner=None, song_aware=False):
+def make_preview(root, source, *, host=None, plugin=None, runner=None, song_aware=False, smart_gentle=False):
     """Create immutable session with Original/Gentle/Firm audition copies.
 
     Caller must obtain explicit UI consent and invoke on a worker thread.
@@ -85,6 +87,8 @@ def make_preview(root, source, *, host=None, plugin=None, runner=None, song_awar
     inspection = runner(host, 'inspect', plugin=plugin, timeout=90)
     _verified_plugin(inspection)
     # Validate full calibration BEFORE copying or processing any user audio.
+    if smart_gentle and not song_aware:
+        raise ValueError('Smart Gentle requires validated song-aware calibration.')
     if song_aware:
         adaptive_plan, prepared = prepare_adaptive(grid, source)
     else:
@@ -96,7 +100,8 @@ def make_preview(root, source, *, host=None, plugin=None, runner=None, song_awar
     report = {'schema_version':1, 'kind':'pro_c3_manual_song_preview', 'created_utc':datetime.now(timezone.utc).isoformat(),
               'status':'failed', 'automatic_compression_enabled':False, 'ready_to_render':False,
               'mapping_verified':False, 'use_for_hermes':False,
-              'song_aware_preview':bool(song_aware), 'adaptive_plan':adaptive_plan, 'source_name':source.name,
+              'song_aware_preview':bool(song_aware), 'smart_gentle_preview':bool(smart_gentle),
+              'adaptive_plan':adaptive_plan, 'source_name':source.name,
               'source_path':str(source), 'source_frames':int(info.frames), 'sample_rate':RATE,
               'scenarios':{}, 'note':'Écoute expérimentale sur COPIES, approuvée manuellement. Aucune exportation de master.'}
     try:
@@ -104,7 +109,54 @@ def make_preview(root, source, *, host=None, plugin=None, runner=None, song_awar
         shutil.copyfile(source, original)
         if original.stat().st_size != source.stat().st_size:
             raise ValueError('Copie du WAV source incomplète.')
-        for name in SCENARIOS:
+        if smart_gentle:
+            # Only two exact previously probed threshold points; never guess
+            # arbitrary values between them or alter a user's original.
+            trial_results = []
+            for label, values in gentle_candidates(adaptive_plan['scenarios']['gentle']):
+                expected, changes = prepare_discrete_scenario(grid, values)
+                trial_output = session / (label + '.wav')
+                rendered = runner(host, 'render', plugin=plugin,
+                                  input_file=original, output_file=trial_output,
+                                  parameter_changes=changes, timeout=900)
+                checked = validate_readback(rendered, expected)
+                tail = int(rendered.get('tail_samples', -1))
+                shape = verify_output(trial_output, info, tail)
+                metrics = evaluate_gentle(original, trial_output, frames=int(info.frames))
+                trial_results.append({'name':label, 'threshold':values['threshold'],
+                                      'path':str(trial_output), 'metrics':metrics,
+                                      'parameters':checked, 'tail_samples':tail,
+                                      'shape':shape, 'settings':values})
+            decision = choose_gentle(trial_results)
+            gentle_output = session / 'gentle.wav'
+            if decision['status'] == 'selected':
+                selected = next(item for item in trial_results
+                                if item['name'] == decision['selected'])
+                shutil.copyfile(selected['path'], gentle_output)
+                report['scenarios']['gentle'] = {
+                    'parameters':selected['parameters'],
+                    'tail_samples':selected['tail_samples'],
+                    'output_path':str(gentle_output),
+                    'shape':verify_output(gentle_output, info, selected['tail_samples'])}
+                adaptive_plan['scenarios']['gentle'] = selected['settings']
+            else:
+                # A valid third choice must remain auditable; the Gentle slot
+                # is an explicit Original fallback, not fake compression.
+                shutil.copyfile(original, gentle_output)
+                report['scenarios']['gentle'] = {
+                    'parameters':{},'tail_samples':0,
+                    'output_path':str(gentle_output),
+                    'shape':verify_output(gentle_output, info, 0),
+                    'fallback_original':True}
+            report['smart_gentle'] = {
+                'status':decision['status'], 'selected':decision['selected'],
+                'reason':decision['reason'],
+                'candidates':[{
+                    'name':x['name'], 'threshold_normalized':x['threshold'],
+                    'metrics':x['metrics'], 'parameters':x['parameters']}
+                    for x in trial_results],
+                'note':'Measured WAV trial, not VST gain reduction. No mastering approval.'}
+        for name in ('firm',) if smart_gentle else SCENARIOS:
             expected, changes = prepared[name]
             output = session / f'{name}.wav'
             result = runner(host, 'render', plugin=plugin, input_file=original, output_file=output,
@@ -159,6 +211,8 @@ def save_choice(root, report, selected):
     """Store a MANUAL session choice; do not train Hermes on it."""
     if selected not in ('original','gentle','firm'):
         raise ValueError('Choix inconnu.')
+    if selected == 'gentle' and report.get('smart_gentle', {}).get('status') == 'fallback_original':
+        raise ValueError('Gentle est un repli Original : approbation Gentle refusée.')
     audition_files(root, report)
     path = (Path(root).resolve() / 'settings/pro_c3_song_preview_choices.jsonl')
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -20,7 +20,7 @@ from .compression_activity import inspect_threshold_activity, interpret_activity
 from .pro_c3_song_preview import make_preview, audition_files, verify_source, save_choice
 from .pro_c3_loudness_match import preview_volume, BASE_VOLUME
 
-CACHE_RENDER_VERSION = 2  # v0.23.4 song-aware processing; never reuse legacy static-preview cache
+CACHE_RENDER_VERSION = 3  # v0.23.9: two smart Gentle trials; invalidate earlier fixed Gentle renders
 MIXES = ('balanced', 'vocal-focus', 'punchy')
 COMPRESSIONS = ('original', 'gentle', 'firm')
 MIX_NAMES = {'balanced':'Balanced', 'vocal-focus':'Vocal Focus', 'punchy':'Punchy'}
@@ -77,7 +77,7 @@ class PrepareNineWorker(QThread):
                     pass
             data = {}
             for key in MIXES:
-                result = make_preview(self.root, self.paths[key], song_aware=True)
+                result = make_preview(self.root, self.paths[key], song_aware=True, smart_gentle=True)
                 if result.get('status') != 'needs_review':
                     raise ValueError(key + ' : ' + str(result.get('error', 'Rendu incomplet')))
                 sources = audition_files(self.root, result)
@@ -182,7 +182,7 @@ class UnifiedComparison(QWidget):
         brand.setStyleSheet('font-size:18px;font-weight:750;color:#f5f6fa;')
         header.addWidget(brand)
         header.addStretch()
-        ver = QLabel('v0.23.8')
+        ver = QLabel('v0.23.9')
         ver.setStyleSheet('color:#9da4b4;font-size:11px;')
         header.addWidget(ver)
         layout.addLayout(header)
@@ -244,6 +244,10 @@ class UnifiedComparison(QWidget):
         self.measure_status.setWordWrap(True)
         self.measure_status.setStyleSheet('color:#b8c1d3;font-size:11px;')
         layout.addWidget(self.measure_status)
+        self.smart_gentle_status = QLabel('Smart Gentle : essais en attente')
+        self.smart_gentle_status.setWordWrap(True)
+        self.smart_gentle_status.setStyleSheet('color:#d5c5f6;font-size:11px;')
+        layout.addWidget(self.smart_gentle_status)
         self.gentle_explanation = QLabel('Gentle : diagnostic en attente')
         self.gentle_explanation.setWordWrap(True)
         self.gentle_explanation.setStyleSheet(
@@ -440,6 +444,24 @@ class UnifiedComparison(QWidget):
             self.measure_status.setText('Mesures indisponibles : impossible de vérifier les différences WAV.')
             self._update_advisor()
             return
+        smart = self._reports.get(self._active[0], {}).get('smart_gentle', {})
+        if smart.get('status') == 'selected':
+            selected = next((x for x in smart.get('candidates', [])
+                             if x.get('name') == smart.get('selected')), {})
+            metrics_trial = selected.get('metrics', {})
+            self.smart_gentle_status.setText(
+                'Smart Gentle : ' + str(len(smart.get('candidates', [])))
+                + ' essais validés JUCE · seuil retenu : '
+                + str(selected.get('parameters', {}).get('threshold', {}).get('plugin_text', '?'))
+                + ' · variation RMS des fenêtres fortes : '
+                + str(metrics_trial.get('window_analysis', {}).get('loud_rms_delta_db', '?'))
+                + ' dB. Écoute avant ♥.')
+        elif smart.get('status') == 'fallback_original':
+            self.smart_gentle_status.setText(
+                'Smart Gentle : aucun des deux essais n’a satisfait les contrôles.'
+                ' Le choix Gentle joue donc Original; ♥ Gentle désactivé.')
+        else:
+            self.smart_gentle_status.setText('Smart Gentle : calibration indisponible.')
         diagnosis = explain_gentle(self._diagnostics.get('metrics', {}),
                                   self._active[0],
                                   self._reports.get(self._active[0], {}))
@@ -595,6 +617,7 @@ class UnifiedComparison(QWidget):
         self._diagnostics = result.get('diagnostics', {})
         # Only prepare synchronized playback once all nine immutable copies exist.
         self._setup_players()
+        self._refresh_gentle_gate()
         self._update_active_diagnostics()
         self.prepare.setVisible(False)
         diagnostic_note = ' Mesures calculées sur les WAV.' if self._diagnostics else ' ⚠ Diagnostic indisponible : ' + str(result.get('diagnostics_error','erreur non précisée'))
@@ -628,6 +651,18 @@ class UnifiedComparison(QWidget):
             self._players[key].setSource(QUrl.fromLocalFile(str(path)))
         self._apply_levels()
         self._update_styles()
+
+    def _gentle_is_fallback(self, mix):
+        return self._reports.get(mix, {}).get('smart_gentle', {}).get('status') == 'fallback_original'
+
+    def _refresh_gentle_gate(self):
+        mix = self._active[0]
+        self.hearts['gentle'].setEnabled(
+            bool(self._files) and not self._gentle_is_fallback(mix))
+        self.buttons['gentle'].setToolTip(
+            'Aucun traitement retenu — Original diffusé'
+            if self._gentle_is_fallback(mix) else
+            'Gentle : meilleur essai Pro-C 3 validé sur cette chanson')
 
     def _media_loaded(self, key, status):
         if self._disposed or key not in self._players:return
@@ -676,6 +711,7 @@ class UnifiedComparison(QWidget):
             if key in self._players and abs(self._players[key].position()-current) > 65:
                 self._players[key].setPosition(current)
         self._active = key
+        self._refresh_gentle_gate()
         self._select_audible()
         self._update_active_diagnostics()
         self._update_styles()
@@ -699,6 +735,11 @@ class UnifiedComparison(QWidget):
     def approve(self, comp):
         key = (self._active[0], comp)
         if key not in self._files:return
+        if comp == 'gentle' and self._gentle_is_fallback(key[0]):
+            QMessageBox.information(self, 'Smart Gentle',
+                'Aucun essai Gentle retenu. Original reste la source.'
+                ' Choisis ♥ Original si tu veux approuver cette version.')
+            return
         if comp != 'original':
             if self._reports.get(key[0]) is None:return
             try: save_choice(self.root, self._reports[key[0]], comp)
@@ -811,6 +852,7 @@ class UnifiedComparison(QWidget):
         self.file_status.setText('Fichier actif : en attente')
         self.measure_status.setText('Mesures WAV : en attente')
         self.gentle_explanation.setText('Gentle : diagnostic en attente')
+        self.smart_gentle_status.setText('Smart Gentle : essais en attente')
         self.activity_inspector.setText('Activité du signal au seuil : en attente')
         self._set_review_markers([])
         self._update_advisor()
