@@ -9,7 +9,27 @@ from __future__ import annotations
 from pathlib import Path
 
 from .compression_diagnostics import wav_profile, compare_wav_content
-from .waveform_preview import waveform_envelope
+import numpy as np
+import soundfile as sf
+
+
+def waveform_envelope(path, max_points=1000):
+    """Fixed full-scale min/max envelope; streaming, no Qt dependency."""
+    with sf.SoundFile(str(path)) as audio:
+        length = len(audio)
+        if length <= 0:
+            return np.empty((0, 2), dtype=np.float32)
+        bin_size = max(1, int(np.ceil(length / max_points)))
+        mins, maxs = [], []
+        while True:
+            data = audio.read(frames=bin_size, dtype='float32', always_2d=True)
+            if len(data) == 0:
+                break
+            if not np.isfinite(data).all():
+                raise ValueError('Non-finite sample in waveform')
+            mins.append(float(np.clip(np.min(data), -1, 1)))
+            maxs.append(float(np.clip(np.max(data), -1, 1)))
+        return np.stack((mins, maxs), axis=1).astype(np.float32)
 
 MIXES = ('balanced', 'vocal-focus', 'punchy')
 COMPRESSIONS = ('original', 'gentle', 'firm')
