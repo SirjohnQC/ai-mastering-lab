@@ -19,6 +19,20 @@ class LanguageConsistencyTests(unittest.TestCase):
         self.assertIn('Pink',tr('en','compare_marker_title',variant='Gentle'))
         self.assertIn('repères',tr('fr','compare_review_count',count=2))
 
+    def test_language_applied_after_all_widgets_exist(self):
+        code=(ROOT/'auto_studio_ui.py').read_text(encoding='utf-8')
+        module=ast.parse(code)
+        init_ui=next(node for node in ast.walk(module)
+                     if isinstance(node, ast.FunctionDef) and node.name=='_init_ui')
+        sequence=ast.get_source_segment(code, init_ui)
+        # Historically a premature translation call after _select('balanced')
+        # crashed on a not-yet-created master_caution QLabel.
+        self.assertEqual(sequence.count('self._apply_language()'),1)
+        self.assertLess(sequence.index('self.master_caution = caution'),
+                        sequence.index('self._apply_language()'))
+        self.assertLess(sequence.index('self.master_headline = mt'),
+                        sequence.index('self._apply_language()'))
+
     def test_all_modified_python_files_parse(self):
         for filename in ('auto_studio_ui.py','unified_comparison.py',
                          'ui_language.py','version.py'):
