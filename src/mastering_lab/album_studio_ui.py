@@ -7,7 +7,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel,
-    QPushButton, QLineEdit, QFileDialog, QMessageBox, QProgressBar, QScrollArea)
+    QPushButton, QLineEdit, QComboBox, QFileDialog, QMessageBox, QProgressBar, QScrollArea)
 
 from .album_project import (empty_project, load_project, save_project,
                             add_entries, discover_album, album_summary)
@@ -61,6 +61,23 @@ class AlbumBatchWorker(QThread):
             self.stage.emit(finished, count, f'{finished}/{count} chansons examinées')
         self.done.emit(self.stop_event.is_set())
 
+class AlbumIntelligenceWorker(QThread):
+    completed = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, project, reference_index, parent=None):
+        super().__init__(parent)
+        self.project_snapshot = json.loads(json.dumps(project))
+        self.reference_index = reference_index
+
+    def run(self):
+        from .album_intelligence import compare_album
+        try:
+            self.completed.emit(compare_album(
+                self.project_snapshot, reference_index=self.reference_index))
+        except Exception as exc:
+            self.failed.emit(f'{type(exc).__name__}: {exc}')
+
 
 class AlbumStudioPage(QWidget):
     """Single guided album workspace that never overwrites individual song sources."""
@@ -71,6 +88,8 @@ class AlbumStudioPage(QWidget):
         self.project_path = self.root / 'settings' / 'album_project.json'
         self.export_dir = self.root / 'sound' / 'output' / 'album_studio'
         self._worker = None
+        self._intelligence_worker = None
+        self._intelligence_report = None
         try:
             self.project = load_project(self.project_path)
         except (OSError, ValueError, json.JSONDecodeError):
@@ -90,7 +109,7 @@ class AlbumStudioPage(QWidget):
         heading.setStyleSheet('font-size:23px;font-weight:750;background:transparent')
         top.addWidget(heading)
         top.addStretch()
-        self.label = QLabel('v0.16.2 · Album Export & AI Choice')
+        self.label = QLabel('v0.25.0 · Album Intelligence')
         self.label.setStyleSheet('color:#afb4c9;background:transparent')
         top.addWidget(self.label)
         layout.addLayout(top)
@@ -113,6 +132,26 @@ class AlbumStudioPage(QWidget):
         self.summary = QLabel()
         self.summary.setStyleSheet('background:transparent;color:#b7c0d1')
         layout.addWidget(self.summary)
+        reference_row = QHBoxLayout()
+        reference_caption = QLabel('Chanson de référence :')
+        reference_row.addWidget(reference_caption)
+        self.reference_picker = QComboBox()
+        self.reference_picker.setToolTip('Choisis un master QC réussi comme référence pour comparer les autres.')
+        self.reference_picker.currentIndexChanged.connect(self._reference_changed)
+        reference_row.addWidget(self.reference_picker, 1)
+        self.compare_album_btn = QPushButton('✦ Analyser la cohérence')
+        self.compare_album_btn.clicked.connect(self._analyze_album)
+        reference_row.addWidget(self.compare_album_btn)
+        layout.addLayout(reference_row)
+        self.consistency_status = QLabel('Choisis une référence avec un master QC validé.')
+        self.consistency_status.setWordWrap(True)
+        self.consistency_status.setStyleSheet('color:#bac5de;background:transparent;font-size:12px;')
+        layout.addWidget(self.consistency_status)
+        self.consistency_detail = QLabel('')
+        self.consistency_detail.setWordWrap(True)
+        self.consistency_detail.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.consistency_detail.setStyleSheet('color:#aebbd1;background:transparent;font-size:11px;')
+        layout.addWidget(self.consistency_detail)
         scroller = QScrollArea()
         scroller.setWidgetResizable(True)
         scroller.setFrameShape(QFrame.NoFrame)
@@ -151,7 +190,100 @@ class AlbumStudioPage(QWidget):
         layout.addWidget(foot)
 
     def _busy(self):
-        return self._worker is not None and self._worker.isRunning()
+        return bool((self._worker is not None and self._worker.isRunning())
+                    or (self._intelligence_worker is not None
+                        and self._intelligence_worker.isRunning()))
+
+    def _refresh_reference_picker(self):
+        tracks = self.project['tracks']
+        selected_path = self.project.get('reference_source')
+        self.reference_picker.blockSignals(True)
+        self.reference_picker.clear()
+        self.reference_picker.addItem('— Choisir une chanson —', None)
+        for i, track in enumerate(tracks):
+            result = track.get('result') or {}
+            available = (track.get('status') == 'qc_pass'
+                         and result.get('status') == 'qc_pass'
+                         and isinstance(result.get('file'), str)
+                         and Path(result['file']).is_file())
+            self.reference_picker.addItem(
+                track.get('title','') + ('' if available else ' · QC requis'),
+                (i, track['path']) if available else None)
+            if not available:
+                item_index = self.reference_picker.count()-1
+                self.reference_picker.model().item(item_index).setEnabled(False)
+            if available and track['path'] == selected_path:
+                self.reference_picker.setCurrentIndex(self.reference_picker.count()-1)
+        self.reference_picker.blockSignals(False)
+        self.compare_album_btn.setEnabled(
+            self.reference_picker.currentData() is not None and not self._busy())
+
+    def _reference_changed(self, _):
+        if self._busy():
+            return
+        choice = self.reference_picker.currentData()
+        self.project['reference_source'] = choice[1] if choice else None
+        self._save()
+        self._intelligence_report = None
+        self.consistency_detail.clear()
+        self.compare_album_btn.setEnabled(bool(choice))
+
+    def _analyze_album(self):
+        if self._busy():
+            return
+        choice = self.reference_picker.currentData()
+        if choice is None:
+            QMessageBox.information(self,'Album Intelligence',
+                                    'Choisis une chanson dont le master a réussi le QC.')
+            return
+        self._save_title()
+        worker = AlbumIntelligenceWorker(self.project, choice[0], self)
+        self._intelligence_worker = worker
+        worker.completed.connect(self._album_analyzed)
+        worker.failed.connect(self._album_analysis_failed)
+        worker.finished.connect(self._intelligence_finished)
+        worker.finished.connect(worker.deleteLater)
+        self.compare_album_btn.setEnabled(False)
+        self.consistency_status.setText('Analyse locale des masters en cours…')
+        worker.start()
+
+    def _intelligence_finished(self):
+        self._intelligence_worker = None
+        self._refresh_reference_picker()
+
+    def _album_analysis_failed(self, message):
+        self.consistency_status.setText('Analyse impossible : ' + message)
+
+    def _album_analyzed(self, report):
+        self._intelligence_report = report
+        self.export_dir.mkdir(parents=True,exist_ok=True)
+        target = self.export_dir / 'album_consistency.json'
+        tmp = target.with_suffix('.json.tmp')
+        tmp.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
+        tmp.replace(target)
+        items = report['tracks']
+        measured = sum(r['status'] in ('reference','measured') for r in items)
+        flagged = sum(bool(r.get('flags')) for r in items)
+        self.consistency_status.setText(
+            f'Référence : {report["reference_title"]} · '
+            f'{measured}/{len(items)} masters analysés · {flagged} piste(s) à écouter')
+        lines = []
+        for row in items:
+            flags = row.get('flags',[])
+            if row['status']=='not_ready':
+                info = 'master QC requis'
+            elif row['status']=='analysis_error':
+                info = 'analyse impossible : ' + row.get('note','')
+            else:
+                diffs = row.get('relative_band_delta_db',[])
+                dominant = max((abs(x) for x in diffs),default=0)
+                info = (f'Δ LUFS {row["lufs_delta"]:+.2f} · '
+                        f'écart spectral maximal {dominant:.1f} dB'
+                        + (' · ⚠ Écoute conseillée' if flags else ' · Mesures proches'))
+            lines.append(f'{row["index"]+1:02d}. {row["title"]}: {info}')
+        self.consistency_detail.setText('\n'.join(lines))
+
+
 
     def _save(self):
         save_project(self.project_path, self.project)
@@ -276,6 +408,7 @@ class AlbumStudioPage(QWidget):
         self.summary.setText(f'{len(tracks)} chansons · {nstereo} WAV stéréo · {nstems} projets stems')
         self.run_btn.setEnabled(bool(tracks) and not self._busy())
         self.back_btn.setEnabled(not self._busy())
+        self._refresh_reference_picker()
 
     def _run(self):
         if self._busy(): return
@@ -392,5 +525,8 @@ class AlbumStudioPage(QWidget):
 
     def shutdown(self):
         if self._busy():
-            self._worker.cancel()
-            self._worker.wait(5000)
+            if self._worker is not None and self._worker.isRunning():
+                self._worker.cancel()
+                self._worker.wait(5000)
+            if self._intelligence_worker is not None and self._intelligence_worker.isRunning():
+                self._intelligence_worker.wait(5000)
