@@ -8,10 +8,12 @@ from __future__ import annotations
 from pathlib import Path
 import json
 import hashlib
+import numpy as np
 from PySide6.QtCore import Qt, QThread, Signal, QUrl, QTimer
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSlider, QCheckBox, QFrame, QMessageBox
 from .waveform_preview import WaveformStrip
+from .compare_visual_diagnostics import measure_combinations
 from .pro_c3_song_preview import make_preview, audition_files, verify_source, save_choice
 from .pro_c3_loudness_match import preview_volume, BASE_VOLUME
 
@@ -65,7 +67,7 @@ class PrepareNineWorker(QThread):
                 try:
                     cache = json.loads(manifest.read_text(encoding='utf-8'))
                     if cache.get('fingerprint') == fingerprint and _cache_valid(self.root, cache.get('result', {})):
-                        self.completed.emit(dict(cache['result'], cached=True))
+                        self.completed.emit(self._attach_diagnostics(dict(cache['result'], cached=True), fingerprint))
                         return
                 except (OSError, ValueError, TypeError, KeyError):
                     pass
@@ -86,9 +88,36 @@ class PrepareNineWorker(QThread):
                     temp.replace(manifest)
                 except (OSError, TypeError, ValueError):
                     pass  # Cache failure cannot invalidate successful audio renders.
-            self.completed.emit(payload)
+            self.completed.emit(self._attach_diagnostics(payload, fingerprint))
         except Exception as exc:
             self.completed.emit({'status':'failed', 'error': f'{type(exc).__name__}: {exc}'})
+
+    def _attach_diagnostics(self, payload, fingerprint):
+        """Diagnosis runs on the render worker and never blocks preview on error."""
+        try:
+            folder = self.root / 'settings'
+            path = folder / 'pro_c3_unified_diagnostics.json'
+            if path.is_file():
+                try:
+                    cache = json.loads(path.read_text(encoding='utf-8'))
+                    if cache.get('fingerprint') == fingerprint and cache.get('diagnostics_version') == 1:
+                        payload['diagnostics'] = cache['results']
+                        return payload
+                except (OSError, ValueError, TypeError, KeyError):
+                    pass
+            files = {(mix, comp): Path(payload['mixes'][mix]['paths'][comp])
+                     for mix in MIXES for comp in COMPRESSIONS}
+            report = measure_combinations(files)
+            payload['diagnostics'] = report
+            folder.mkdir(parents=True, exist_ok=True)
+            temp = path.with_suffix('.json.tmp')
+            temp.write_text(json.dumps(
+                {'fingerprint': fingerprint, 'diagnostics_version': 1, 'results': report},
+                ensure_ascii=False), encoding='utf-8')
+            temp.replace(path)
+        except Exception as exc:
+            payload['diagnostics_error'] = str(exc)
+        return payload
 
 
 class UnifiedComparison(QWidget):
@@ -102,6 +131,7 @@ class UnifiedComparison(QWidget):
         self.worker = None
         self._files = {}
         self._reports = {}
+        self._diagnostics = {}
         self._sources = {}
         self._loaded = set()
         self._players = {}
@@ -185,6 +215,13 @@ class UnifiedComparison(QWidget):
         self.waveform.setActive(True)
         self.waveform.clickedPosition.connect(self._waveform_seek)
         layout.addWidget(self.waveform)
+        self.file_status = QLabel('Fichier actif : en attente')
+        self.file_status.setStyleSheet('color:#aab7cf;font-size:11px;')
+        layout.addWidget(self.file_status)
+        self.measure_status = QLabel('Mesures WAV : en attente')
+        self.measure_status.setWordWrap(True)
+        self.measure_status.setStyleSheet('color:#b8c1d3;font-size:11px;')
+        layout.addWidget(self.measure_status)
         transport = QHBoxLayout()
         self.play_button = QPushButton('▶ Écouter')
         self.play_button.clicked.connect(self.toggle)
@@ -243,6 +280,7 @@ class UnifiedComparison(QWidget):
         self._dispose_players()
         self._files.clear()
         self._reports.clear()
+        self._diagnostics = {}
         self._approved = None
         self._active = (self._active[0], 'original')
         self._update_styles()
@@ -263,7 +301,38 @@ class UnifiedComparison(QWidget):
         self._seek()
 
     def set_waveform(self, envelope):
-        self.waveform.setData(envelope)
+        # Once render diagnostics are ready, each compression gets its OWN
+        # measured waveform. Do not let the legacy mix waveform overwrite it.
+        if not self._files or not self._diagnostics.get('envelopes'):
+            self.waveform.setData(envelope)
+
+    def _update_active_diagnostics(self):
+        key = '/'.join(self._active)
+        if self._files.get(self._active):
+            path = self._files[self._active]
+            self.file_status.setText('WAV actif : ' + str(path))
+            if self._active in self._players:
+                self.file_status.setToolTip(str(path))
+        wave = self._diagnostics.get('envelopes', {}).get(key)
+        if wave:
+            self.waveform.setData(np.asarray(wave, dtype=np.float32))
+        metrics = self._diagnostics.get('metrics', {}).get(key)
+        if not metrics:
+            self.measure_status.setText('Mesures indisponibles : impossible de vérifier les différences WAV.')
+            return
+        rms = metrics.get('rms_dbfs')
+        peak = metrics.get('sample_peak_dbfs')
+        crest = metrics.get('crest_db')
+        parts = ['RMS : ' + str(rms) + ' dBFS', 'Peak : ' + str(peak) + ' dBFS',
+                 'Crest : ' + str(crest) + ' dB']
+        if self._active[1] != 'original':
+            if metrics.get('same_samples_as_original'):
+                parts.append('⚠ WAV STRICTEMENT IDENTIQUE À ORIGINAL — vérifier le rendu Pro-C 3 !')
+            else:
+                parts.append('Diff. RMS : ' + str(metrics.get('rms_delta_db')) + ' dB')
+                parts.append('Null RMS : ' + str(metrics.get('null_difference_rms_dbfs')) + ' dBFS')
+        self.measure_status.setText('  |  '.join(parts))
+
 
     def _confirm_prepare(self):
         if self.is_busy() or len(self._sources) != 3:return
@@ -292,10 +361,13 @@ class UnifiedComparison(QWidget):
             return
         self._files = {(mix, comp): Path(result['mixes'][mix]['paths'][comp]) for mix in MIXES for comp in COMPRESSIONS}
         self._reports = {mix:result['mixes'][mix]['report'] for mix in MIXES}
+        self._diagnostics = result.get('diagnostics', {})
         # Only prepare synchronized playback once all nine immutable copies exist.
         self._setup_players()
+        self._update_active_diagnostics()
         self.prepare.setVisible(False)
-        self.status.setText(('9 combinaisons récupérées du cache.' if result.get('cached') else '9 combinaisons générées.') + ' Change mix et compression pendant la lecture. ♥ approuve pour le mastering.')
+        diagnostic_note = ' Mesures calculées sur les WAV.' if self._diagnostics else ' ⚠ Diagnostic indisponible : ' + str(result.get('diagnostics_error','erreur non précisée'))
+        self.status.setText(('9 combinaisons récupérées du cache.' if result.get('cached') else '9 combinaisons générées.') + diagnostic_note + ' ♥ approuve pour le mastering.')
         self.prepared.emit(True)
 
     def _setup_players(self):
@@ -374,6 +446,7 @@ class UnifiedComparison(QWidget):
                 self._players[key].setPosition(current)
         self._active = key
         self._select_audible()
+        self._update_active_diagnostics()
         self._update_styles()
         self._refresh_hearts()
         if key in self._players:self._position(key, self._players[key].position())
@@ -498,11 +571,14 @@ class UnifiedComparison(QWidget):
         self._dispose_players()
         self._files.clear()
         self._reports.clear()
+        self._diagnostics = {}
         self._approved = None
         self._session_tag = None
         self._sources = {}
         self._active = ('balanced','original')
         self.waveform.setData(None)
+        self.file_status.setText('Fichier actif : en attente')
+        self.measure_status.setText('Mesures WAV : en attente')
         self.prepare.setVisible(False)
         self.prepare.setEnabled(True)
         self.play_button.setEnabled(False)
