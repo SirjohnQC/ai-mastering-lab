@@ -405,7 +405,23 @@ class UnifiedComparison(QWidget):
             self.recommendation.setText('✦ Hermes recommande le mix : ' + MIX_NAMES[mix] + ' · Compression Pro-C 3 : analyse PCM distincte, PAS une décision Hermes' + ref + '.')
 
     def is_busy(self):
-        return bool(self.worker and self.worker.isRunning())
+        """Never dereference a C++ QThread destroyed by deleteLater()."""
+        worker = self.worker
+        if worker is None:
+            return False
+        try:
+            return bool(worker.isRunning())
+        except RuntimeError:
+            # PySide6 keeps a Python wrapper after QObject was deleted.
+            if self.worker is worker:
+                self.worker = None
+            return False
+
+    def _worker_finished(self):
+        """Release the worker handle before Qt removes the C++ object."""
+        finished_worker = self.sender()
+        if self.worker is finished_worker:
+            self.worker = None
 
     def prepare_automatically(self):
         """Non-destructive cached renders as the user opens Compare."""
@@ -431,10 +447,12 @@ class UnifiedComparison(QWidget):
         self.play_button.setEnabled(False)
         self.seek.setEnabled(False)
         self.status.setText('Préparation des 9 pistes ou récupération du cache… Aucun original modifié.')
-        self.worker = PrepareNineWorker(self.root, dict(self._sources), self)
-        self.worker.completed.connect(self._on_prepared)
-        self.worker.finished.connect(self.worker.deleteLater)
-        self.worker.start()
+        worker = PrepareNineWorker(self.root, dict(self._sources), self)
+        self.worker = worker
+        worker.completed.connect(self._on_prepared)
+        worker.finished.connect(self._worker_finished)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
 
     def _jump_to_marker(self, index):
         """Seek ALL nine players to the same locally measured position."""
