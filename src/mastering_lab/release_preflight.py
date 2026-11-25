@@ -179,7 +179,7 @@ def format_preflight(result, language='fr'):
             lines.append('À VÉRIFIER : ' + ' | '.join(result['warnings']))
         lines.extend(['Ce rapport ne certifie pas une publication Spotify/DistroKid.',
                       'Avant publication : écoute complète, cohérence album, titres/crédits, artwork et droits.'])
-    return '\\n'.join(lines)
+    return '\n'.join(lines)
 
 
 def _issue_to_english(message):
