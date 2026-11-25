@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QFileDialog, QProgressBar, QCheckBox, QSizePolicy, QScrollArea, QLineEdit, QDialog, QTextEdit, QApplication)
 from .mix_comparison import load_comparison, VARIANT_ORDER, VARIANT_LABELS
 from .waveform_preview import WaveformStrip, WaveformLoader
+from .ui_language import get_language, set_language, tr
 
 
 class MixCard(QFrame):
@@ -244,6 +245,7 @@ class AutoStudioPage(QWidget):
         self._master_preview_path = None
         self._master_seek_dragging = False
         self._album_page = None
+        self._language = get_language()
         self._init_ui()
         stems.audioLoaded.connect(self._audio_loaded)
         stems.productionStatus.connect(self._on_status)
@@ -316,20 +318,32 @@ class AutoStudioPage(QWidget):
         advanced.setObjectName('secondary')
         advanced.clicked.connect(lambda *_: self.openAdvanced.emit())
         header.addWidget(advanced)
+        from PySide6.QtWidgets import QComboBox
+        self.language_combo = QComboBox(self)
+        self.language_combo.addItem('Français', 'fr')
+        self.language_combo.addItem('English', 'en')
+        self.language_combo.setCurrentIndex(0 if self._language == 'fr' else 1)
+        self.language_combo.currentIndexChanged.connect(self._change_language)
+        self.language_combo.setToolTip('Langue / Language')
+        header.addWidget(self.language_combo)
+        self.advanced_header_button = advanced
         album_button = QPushButton('💿  Album Mode')
         album_button.setObjectName('secondary')
         album_button.clicked.connect(self._open_album)
         header.addWidget(album_button)
+        self.album_header_button = album_button
         reference_button = QPushButton('♫  Références')
         reference_button.setObjectName('secondary')
         reference_button.setToolTip('Analyser des fichiers audio et guider Hermes avec un profil de référence local')
         reference_button.clicked.connect(self._open_references)
         header.addWidget(reference_button)
+        self.references_header_button = reference_button
         root.addLayout(header)
         subtitle = QLabel('Charge tes stems, lance Auto Produce, compare les 3 mixages et approuve ton choix avant Mastering.')
         subtitle.setWordWrap(True)
         subtitle.setStyleSheet('color:#abb5c8;')
         root.addWidget(subtitle)
+        self.subtitle_label = subtitle
 
         nav = QHBoxLayout()
         self.nav = []
@@ -391,7 +405,7 @@ class AutoStudioPage(QWidget):
         v.addWidget(explanation)
         self.song_title_import = QLineEdit()
         self.song_title_import.setObjectName('songTitleImport')
-        self.song_title_import.setPlaceholderText('Nom de la chanson (pour le WAV final)')
+        self.song_title_import.setPlaceholderText(tr(self._language, 'song_title'))
         v.addWidget(self.song_title_import)
         h = QHBoxLayout()
         pick = QPushButton('＋  Choisir des stems')
@@ -402,6 +416,8 @@ class AutoStudioPage(QWidget):
         folder.clicked.connect(self._choose_folder)
         h.addWidget(pick)
         h.addWidget(folder)
+        self.pick_stems_button = pick
+        self.pick_folder_button = folder
         v.addLayout(h)
         self.file_info = QLabel('Aucun stem chargé')
         self.file_info.setStyleSheet('color:#acb5c8;')
@@ -412,6 +428,7 @@ class AutoStudioPage(QWidget):
         self.produce_btn.setEnabled(False)
         self.produce_btn.clicked.connect(self._produce)
         v.addWidget(self.produce_btn)
+        self.produce_btn.setText(tr(self._language, 'auto_produce'))
         self._import_bottom_spacer = v.count()
         v.addStretch(2)
         self.import_layout = v
@@ -673,6 +690,7 @@ class AutoStudioPage(QWidget):
         rv.addWidget(self.optional_tools_button)
         rv.addWidget(self.optional_tools_panel)
         self._select('balanced')
+        self._apply_language()
         secondary = QHBoxLayout()
         self.gen2 = QPushButton('✦  Améliorer avec Gen 2')
         self.gen2.setObjectName('secondary')
@@ -683,6 +701,8 @@ class AutoStudioPage(QWidget):
         details = QPushButton('Rapport & spectrogrammes')
         details.setObjectName('secondary')
         details.clicked.connect(self._show_details)
+        self.more_button = more
+        self.details_button = details
         secondary.addWidget(self.gen2, 1)
         secondary.addWidget(more, 1)
         secondary.addWidget(details, 1)
@@ -691,6 +711,7 @@ class AutoStudioPage(QWidget):
         disclaimer.setWordWrap(True)
         disclaimer.setStyleSheet('color:#9faac0;font-size:12px;')
         rv.addWidget(disclaimer)
+        self.disclaimer_label = disclaimer
         rv.addStretch(1)
         result_scroll = QScrollArea()
         result_scroll.setWidgetResizable(True)
@@ -707,11 +728,13 @@ class AutoStudioPage(QWidget):
         mt = QLabel('Ton mix, ton master.')
         mt.setStyleSheet('background:transparent;font-size:24px;font-weight:750;')
         ml.addWidget(mt)
+        self.master_headline = mt
         self.master_description = QLabel('Sélectionne un mixage sur la page Comparer pour commencer.')
         self.master_description.setWordWrap(True)
         self.master_description.setStyleSheet('color:#abb5c8;')
         ml.addWidget(self.master_description)
-        ml.addWidget(QLabel('Nom de la chanson (nom du fichier exporté)'))
+        self.master_title_label = QLabel('Nom de la chanson (nom du fichier exporté)')
+        ml.addWidget(self.master_title_label)
         self.song_title_master = QLineEdit()
         self.song_title_master.setObjectName('songTitleMaster')
         self.song_title_master.setPlaceholderText('Ex. All We Know Is Falling')
@@ -754,6 +777,7 @@ class AutoStudioPage(QWidget):
         player_title = QLabel('Écoute du master')
         player_title.setStyleSheet('font-size:14px;font-weight:700;color:#f3f2fa;')
         player_layout.addWidget(player_title)
+        self.master_review_label = player_title
         self.master_waveform = WaveformStrip(self.master_player_panel)
         self.master_waveform.setFixedHeight(70)
         self.master_waveform.setActive(True)
@@ -801,6 +825,7 @@ class AutoStudioPage(QWidget):
         advanced_master.setObjectName('secondary')
         advanced_master.clicked.connect(self._handoff_to_advanced_master)
         ml.addWidget(advanced_master)
+        self.master_advanced_button = advanced_master
         caution = QLabel('Première passe technique : loudness, true peak et WAV 24-bit. '
                          'Les contrôles QC ne remplacent pas l’écoute humaine ni la cohérence d’un album complet.')
         caution.setWordWrap(True)
@@ -808,14 +833,60 @@ class AutoStudioPage(QWidget):
         ml.addWidget(caution)
         ml.addStretch(2)
         self.stack.addWidget(master)
+        self._apply_language()
         self._go(0)
+
+    def _change_language(self, index):
+        language = self.language_combo.itemData(index)
+        if language not in ('fr', 'en'):
+            return
+        self._language = language
+        set_language(language)
+        self._apply_language()
+
+    def _apply_language(self):
+        """Translate main Auto Studio controls without restarting audio."""
+        lang = self._language
+        self.advanced_header_button.setText(tr(lang, 'advanced'))
+        self.album_header_button.setText(tr(lang, 'album'))
+        self.references_header_button.setText(tr(lang, 'references'))
+        self.subtitle_label.setText(tr(lang, 'intro'))
+        for i, key in enumerate(('import','produce','compare','master')):
+            self.nav[i].setText(tr(lang, key))
+        self.pick_stems_button.setText(tr(lang,'pick_stems'))
+        self.pick_folder_button.setText(tr(lang,'pick_folder'))
+        self.song_title_import.setPlaceholderText(tr(lang,'song_title'))
+        self.produce_btn.setText(tr(lang,'auto_produce'))
+        self.change_music.setText(tr(lang,'change_music'))
+        self.continue_btn.setText(tr(lang,'continue',mix=VARIANT_LABELS.get(self._selected, 'Balanced')))
+        self.optional_tools_button.setText(tr(
+            lang,'options_open' if self.optional_tools_panel.isVisible()
+            else 'options_closed'))
+        self.unified.set_language(lang)
+        if hasattr(self, 'master_headline'):
+            self.master_headline.setText(tr(lang,'master_headline'))
+            self.master_title_label.setText(tr(lang,'master_title'))
+            self.master_review_label.setText(tr(lang,'master_review'))
+            self.master_cancel.setText(tr(lang,'master_cancel'))
+            self.master_open.setText(tr(lang,'master_open'))
+            self.master_preflight.setText(tr(lang,'master_preflight'))
+            self.master_advanced_button.setText(tr(lang,'master_advanced'))
+            self.gen2.setText(tr(lang,'gen2'))
+            self.more_button.setText(tr(lang,'more'))
+            self.details_button.setText(tr(lang,'details'))
+            self.disclaimer_label.setText(tr(lang,'disclaimer'))
+            if self._master_input is None:
+                self.master_description.setText(tr(lang,'master_initial'))
+            else:
+                self.master_description.setText(tr(lang,'source',name=self._master_input.name,
+                                                   variant=self._master_mix_variant or 'original'))
+        self._update_master_button()
 
     def _toggle_optional_tools(self):
         show = not self.optional_tools_panel.isVisible()
         self.optional_tools_panel.setVisible(show)
-        self.optional_tools_button.setText(
-            '⚙ Options facultatives · Advanced (masquer)' if show else
-            '⚙ Options facultatives · Advanced (afficher)')
+        self.optional_tools_button.setText(tr(
+            self._language, 'options_open' if show else 'options_closed'))
 
     def _open_references(self):
         if not self._can_change_music():
@@ -1564,7 +1635,7 @@ class AutoStudioPage(QWidget):
         for k, card in self.cards.items():
             card.selected_style(k == key)
             card.waveform.setActive(k == key)
-        self.continue_btn.setText('→  Continuer vers Mastering — ' + VARIANT_LABELS[key])
+        self.continue_btn.setText(tr(self._language, 'continue', mix=VARIANT_LABELS[key]))
         self.ai_use.setVisible(bool(self._ai_decision and self._ai_decision.get('mode') == 'hermes' and self._ai_decision.get('selected') != key))
         if self._player and (not hasattr(self, 'unified') or not self.unified._files):
             self._player.switch(key)
@@ -1710,10 +1781,16 @@ class AutoStudioPage(QWidget):
             'Original par défaut. Clique ♥ sur le mix et la compression voulus pour approuver la source du mastering.')
 
     def _selected_mix_path(self):
-        if self._player is None:
-            return None
-        source = self._player.paths.get(self._selected)
-        return Path(source).resolve() if source and Path(source).is_file() else None
+        """Prefer the source retained by the active common player, not legacy UI."""
+        if hasattr(self, 'unified'):
+            source = self.unified._sources.get(self._selected)
+            if source and Path(source).is_file():
+                return Path(source).resolve()
+        if self._player is not None:
+            source = self._player.paths.get(self._selected)
+            if source and Path(source).is_file():
+                return Path(source).resolve()
+        return None
 
     def _sync_title_from_import(self, title):
         if self.song_title_master.text() != title:
@@ -1772,21 +1849,31 @@ class AutoStudioPage(QWidget):
         running = self._master_worker is not None and self._master_worker.isRunning()
         processed = self._master_is_processed()
         self.master_run.setEnabled(not running and not processed and self._master_key() is not None)
-        self.master_run.setText('✓  MASTER DÉJÀ CRÉÉ' if processed else '✦  AUTO MASTER')
+        self.master_run.setText(tr(self._language,
+                                   'master_done' if processed else 'master_action'))
         if processed:
             self.master_status.setText('✓  Master déjà créé. Aucun nouveau traitement nécessaire.')
 
     def _continue_mastering(self):
-        """Prepare selected premix and show Mastering, without rendering."""
+        """Surface any navigation exception instead of silent no-op."""
+        try:
+            self._prepare_mastering_navigation()
+        except Exception as exc:
+            QMessageBox.critical(
+                self, 'Mastering',
+                tr(self._language,'master_error',error=f'{type(exc).__name__}: {exc}'))
+
+    def _prepare_mastering_navigation(self):
+        """Choose approved audio and enter stage 3 without rendering."""
         source = self._selected_mix_path()
         if source is None:
-            QMessageBox.warning(self, 'Mix manquant', 'Choisis un mixage existant avant le mastering.')
+            QMessageBox.warning(self, 'Mastering', tr(self._language,'missing_source'))
             return
         # Compressed previews must be explicitly heart-approved. Otherwise
         # mastering always receives the actual uncompressed premix.
         if hasattr(self, 'unified'):
             if self.unified.is_busy():
-                QMessageBox.information(self, 'Traitement en cours', 'Attends les copies Pro-C 3 avant de continuer.')
+                QMessageBox.information(self, 'Mastering', tr(self._language,'busy'))
                 return
             choice = self.unified.master_source(self._selected)
             if choice is not None and Path(choice).is_file():
@@ -1808,10 +1895,9 @@ class AutoStudioPage(QWidget):
         self._master_input = source
         self._master_mix_variant = new_variant
         self._master_song_title = self._song_title_for_export()
-        self.master_description.setText('Source : ' + source.name + ' (' + new_variant + ')' +
-            '\nAuto Master technique : loudness cible −14 LUFS, plafond −1 dBTP, export PCM 24-bit.')
+        self.master_description.setText(tr(self._language,'source',name=source.name,variant=new_variant))
         if not self._master_is_processed():
-            self.master_status.setText('Prêt à créer le master. Clique sur AUTO MASTER pour démarrer.')
+            self.master_status.setText(tr(self._language,'master_ready'))
         self._update_master_button()
         self._go(3)
 
