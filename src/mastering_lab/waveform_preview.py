@@ -60,12 +60,14 @@ class WaveformLoader(QThread):
 
 class WaveformStrip(QWidget):
     clickedPosition = Signal(float)
+    markerClicked = Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._data = None
         self._position = 0.0
         self._active = False
+        self._markers = []
         self.setFixedHeight(38)
         self.setMinimumWidth(120)
         self.setCursor(Qt.PointingHandCursor)
@@ -73,6 +75,13 @@ class WaveformStrip(QWidget):
 
     def setData(self, envelope):
         self._data = envelope
+        self.update()
+
+    def setMarkers(self, markers):
+        """Draw bounded listening markers on the shared waveform itself."""
+        self._markers = [float(v) for v in markers
+                         if isinstance(v, (int, float)) and
+                         not isinstance(v, bool) and 0.0 <= float(v) <= 1.0]
         self.update()
 
     def setPosition(self, fraction):
@@ -112,6 +121,13 @@ class WaveformStrip(QWidget):
         else:
             painter.setPen(QColor('#68758d'))
             painter.drawText(bounds, Qt.AlignCenter, 'Chargement de la forme d’onde…')
+        # Highlight review positions above the waveform; pink markers are
+        # visually distinct from the lavender transport playhead.
+        for index, fraction in enumerate(self._markers):
+            mx = bounds.left() + round(fraction * bounds.width())
+            painter.setPen(QPen(QColor('#fa81bb'), 2))
+            painter.drawLine(mx, bounds.top() + 1, mx, bounds.bottom())
+            painter.fillRect(mx - 4, bounds.top() + 1, 9, 5, QColor('#fa81bb'))
         painter.setPen(QPen(QColor('#dfd2ff'), 2))
         px = bounds.left() + round(self._position * bounds.width())
         painter.drawLine(px, bounds.top(), px, bounds.bottom())
@@ -119,6 +135,15 @@ class WaveformStrip(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
+            bounds = self.rect().adjusted(1, 1, -1, -1)
+            # A click close to a marker previews the same exact moment as its
+            # timestamp button. Else preserve the existing waveform-seek action.
+            for index, fraction in enumerate(self._markers):
+                marker_x = bounds.left() + fraction * bounds.width()
+                if abs(event.position().x() - marker_x) <= 7:
+                    self.markerClicked.emit(index)
+                    event.accept()
+                    return
             frac = max(0.0, min(1.0, event.position().x() / max(1, self.width())))
             self.clickedPosition.emit(frac)
             event.accept()

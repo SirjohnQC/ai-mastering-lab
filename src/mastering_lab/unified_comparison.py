@@ -102,7 +102,7 @@ class PrepareNineWorker(QThread):
             if path.is_file():
                 try:
                     cache = json.loads(path.read_text(encoding='utf-8'))
-                    if cache.get('fingerprint') == fingerprint and cache.get('diagnostics_version') == 2:
+                    if cache.get('fingerprint') == fingerprint and cache.get('diagnostics_version') == 3:
                         payload['diagnostics'] = cache['results']
                         return payload
                 except (OSError, ValueError, TypeError, KeyError):
@@ -114,7 +114,7 @@ class PrepareNineWorker(QThread):
             folder.mkdir(parents=True, exist_ok=True)
             temp = path.with_suffix('.json.tmp')
             temp.write_text(json.dumps(
-                {'fingerprint': fingerprint, 'diagnostics_version': 2, 'results': report},
+                {'fingerprint': fingerprint, 'diagnostics_version': 3, 'results': report},
                 ensure_ascii=False), encoding='utf-8')
             temp.replace(path)
         except Exception as exc:
@@ -165,7 +165,7 @@ class UnifiedComparison(QWidget):
         brand.setStyleSheet('font-size:18px;font-weight:750;color:#f5f6fa;')
         header.addWidget(brand)
         header.addStretch()
-        ver = QLabel('v0.23.5')
+        ver = QLabel('v0.23.6')
         ver.setStyleSheet('color:#9da4b4;font-size:11px;')
         header.addWidget(ver)
         layout.addLayout(header)
@@ -218,6 +218,7 @@ class UnifiedComparison(QWidget):
         self.waveform.setFixedHeight(64)
         self.waveform.setActive(True)
         self.waveform.clickedPosition.connect(self._waveform_seek)
+        self.waveform.markerClicked.connect(self._jump_to_marker)
         layout.addWidget(self.waveform)
         self.file_status = QLabel('Fichier actif : en attente')
         self.file_status.setStyleSheet('color:#aab7cf;font-size:11px;')
@@ -226,6 +227,21 @@ class UnifiedComparison(QWidget):
         self.measure_status.setWordWrap(True)
         self.measure_status.setStyleSheet('color:#b8c1d3;font-size:11px;')
         layout.addWidget(self.measure_status)
+        self.marker_title = QLabel('Passages à comparer · Original ↔ compression')
+        self.marker_title.setStyleSheet('color:#aab7cf;font-size:11px;')
+        layout.addWidget(self.marker_title)
+        marker_row = QHBoxLayout()
+        self.marker_buttons = []
+        for index in range(3):
+            button = QPushButton('Écoute ' + str(index+1))
+            button.setVisible(False)
+            button.setEnabled(False)
+            button.clicked.connect(lambda _=False, i=index: self._jump_to_marker(i))
+            self.marker_buttons.append(button)
+            marker_row.addWidget(button, 1)
+        layout.addLayout(marker_row)
+        self._active_markers = []
+        self._marker_reference = None
         advisor_title = QLabel('3. Suggestion de compression (mesures WAV)')
         advisor_title.setStyleSheet('font-size:13px;font-weight:700;color:#f3f3f7;')
         layout.addWidget(advisor_title)
@@ -305,6 +321,7 @@ class UnifiedComparison(QWidget):
         self._files.clear()
         self._reports.clear()
         self._diagnostics = {}
+        self._marker_reference = None
         self._advisor_choice = 'original'
         self._approved = None
         self._active = (self._active[0], 'original')
@@ -319,6 +336,53 @@ class UnifiedComparison(QWidget):
         self.worker.completed.connect(self._on_prepared)
         self.worker.finished.connect(self.worker.deleteLater)
         self.worker.start()
+
+    def _jump_to_marker(self, index):
+        """Seek ALL nine players to the same locally measured position."""
+        if not self._players or not self._loaded or index >= len(self._active_markers):
+            return
+        marker = self._active_markers[index]
+        target = int(marker['seek_ms'])
+        if target < 0 or target > self._max_ms:
+            return
+        self.seek.setValue(target)
+        self._seek()
+        self._position(self._active, target)
+        # The shared transport starts audition only if playback is stopped.
+        if not self._running:
+            self.toggle()
+
+    def _set_review_markers(self, markers):
+        self._active_markers = [
+            item for item in (markers or [])[:3]
+            if isinstance(item, dict) and
+            isinstance(item.get('seek_ms'), int) and
+            0 <= item['seek_ms'] <= self._max_ms
+        ]
+        self.waveform.setMarkers([
+            item['source_ms'] / max(1, self._max_ms)
+            for item in self._active_markers
+        ])
+        for index, button in enumerate(self.marker_buttons):
+            if index < len(self._active_markers):
+                item = self._active_markers[index]
+                ms = item['source_ms']
+                stamp = f'{ms//60000:02d}:{ms//1000%60:02d}'
+                button.setText('▶ ' + stamp)
+                button.setToolTip(
+                    'Passage suggéré · différence RMS locale : '
+                    + str(item['rms_delta_db']) + ' dB. Écoute et compare à Original.')
+                button.setEnabled(bool(self._players))
+                button.setVisible(True)
+            else:
+                button.setEnabled(False)
+                button.setVisible(False)
+        comparison = COMP_NAMES.get(self._marker_reference or '', '')
+        self.marker_title.setText(
+            'Repères roses : passages à comparer avec ' + comparison
+            + ' (différences PCM, pas nécessairement des défauts)'
+            if self._active_markers else
+            'Aucun repère mesurable pour ce mix : essaye Gentle ou Firm.')
 
     def _waveform_seek(self, fraction):
         if not self._players:return
@@ -343,6 +407,7 @@ class UnifiedComparison(QWidget):
             self.waveform.setData(np.asarray(wave, dtype=np.float32))
         metrics = self._diagnostics.get('metrics', {}).get(key)
         if not metrics:
+            self._set_review_markers([])
             self.measure_status.setText('Mesures indisponibles : impossible de vérifier les différences WAV.')
             self._update_advisor()
             return
@@ -368,6 +433,28 @@ class UnifiedComparison(QWidget):
                              + ', ratio=' + str(scenario.get('ratio'))
                              + ' (normalisés)')
         window = metrics.get('window_analysis', {})
+        # Even in Original, show where the recommended compression changes the
+        # signal so users can start on Original, jump, then switch Gentle/Firm.
+        marker_variant = self._active[1]
+        if marker_variant == 'original':
+            candidates = ('gentle', 'firm')
+            available = [
+                (variant, self._diagnostics.get('metrics', {})
+                 .get(self._active[0] + '/' + variant, {})
+                 .get('window_analysis', {}).get('review_markers', []))
+                for variant in candidates
+            ]
+            marker_variant = next(
+                (variant for variant, items in available if items), None)
+            if marker_variant:
+                window_for_markers = self._diagnostics.get('metrics', {}).get(
+                    self._active[0] + '/' + marker_variant, {}).get('window_analysis', {})
+            else:
+                window_for_markers = {}
+        else:
+            window_for_markers = window
+        self._marker_reference = marker_variant
+        self._set_review_markers(window_for_markers.get('review_markers', []))
         if window.get('status') == 'measured':
             parts.append('Passages forts vs calmes : '
                          + str(window['loud_relative_to_quiet_db']) + ' dB (comparaison PCM)')
@@ -662,6 +749,7 @@ class UnifiedComparison(QWidget):
         self.waveform.setData(None)
         self.file_status.setText('Fichier actif : en attente')
         self.measure_status.setText('Mesures WAV : en attente')
+        self._set_review_markers([])
         self._update_advisor()
         self.prepare.setVisible(False)
         self.prepare.setEnabled(True)

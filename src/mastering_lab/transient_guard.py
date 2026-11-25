@@ -38,6 +38,7 @@ def compare_windows(original_path, processed_path, *, frames=None):
         window = src.samplerate * WINDOW_MS // 1000
         records = []
         remaining = usable
+        window_index = 0
         while remaining >= window:
             a = src.read(window, dtype='float32', always_2d=True)
             b = dst.read(window, dtype='float32', always_2d=True)
@@ -50,8 +51,9 @@ def compare_windows(original_path, processed_path, *, frames=None):
                 peak_a = float(np.max(np.abs(a)))
                 peak_b = float(np.max(np.abs(b)))
                 records.append((rms_a, _db_ratio(rms_b,rms_a),
-                                _db_ratio(peak_b,peak_a)))
+                                _db_ratio(peak_b,peak_a), window_index * WINDOW_MS))
             remaining -= window
+            window_index += 1
     if len(records) < 3:
         return {'status':'insufficient_active_audio','active_windows':len(records)}
     array = np.asarray(records, dtype=np.float64)
@@ -63,6 +65,30 @@ def compare_windows(original_path, processed_path, *, frames=None):
     loud_rms_delta = float(np.median(loud[:,1]))
     quiet_rms_delta = float(np.median(quiet[:,1]))
     relative = loud_rms_delta - quiet_rms_delta
+    # These are review suggestions, not detected audible artefacts.
+    # Rank active, above-median SOURCE windows by processed-vs-Original
+    # impact; keep distinct passages >=4 s apart and start 400 ms early.
+    candidates = []
+    median_source_level = float(np.median(array[:, 0]))
+    for src_rms, rms_delta, peak_delta, ms in array:
+        if src_rms < median_source_level:
+            continue
+        impact = abs(rms_delta - quiet_rms_delta) + 0.25 * abs(peak_delta)
+        if impact < 0.30:
+            continue
+        candidates.append((float(impact), int(ms), float(rms_delta)))
+    selected = []
+    for impact, ms, rms_delta in sorted(candidates, key=lambda row: (-row[0], row[1])):
+        if all(abs(ms - prior['source_ms']) >= 4000 for prior in selected):
+            selected.append({
+                'source_ms': ms,
+                'seek_ms': max(0, ms - 400),
+                'impact_score': round(impact, 3),
+                'rms_delta_db': round(rms_delta, 3),
+            })
+            if len(selected) >= 3:
+                break
+    selected.sort(key=lambda row: row['source_ms'])
     # Relative high-level change is a *proxy*. It may be influenced by
     # makeup gain, EQ or signal shifts and is NOT VST gain reduction.
     return {
@@ -72,6 +98,7 @@ def compare_windows(original_path, processed_path, *, frames=None):
         'loud_relative_to_quiet_db':round(relative,3),
         'loud_peak_delta_db':round(float(np.median(loud[:,2])),3),
         'overcompression_warning': bool(relative < -5.0),
+        'review_markers': selected,
         'effect_nearly_inaudible_warning': bool(abs(relative)<0.15 and abs(loud_rms_delta)<0.15),
-        'note':'Short-window PCM proxy, NOT FabFilter Pro-C 3 gain reduction.',
+        'note':'Short-window PCM proxy, NOT FabFilter Pro-C 3 gain reduction. Markers are suggested review positions, not verified defects.',
     }
