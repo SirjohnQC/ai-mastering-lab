@@ -14,6 +14,7 @@ from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSlider, QCheckBox, QFrame, QMessageBox
 from .waveform_preview import WaveformStrip
 from .compare_visual_diagnostics import measure_combinations
+from .compression_advisor import suggest_compression
 from .pro_c3_song_preview import make_preview, audition_files, verify_source, save_choice
 from .pro_c3_loudness_match import preview_volume, BASE_VOLUME
 
@@ -132,6 +133,8 @@ class UnifiedComparison(QWidget):
         self._files = {}
         self._reports = {}
         self._diagnostics = {}
+        self._intensity = 'balanced'
+        self._advisor_choice = 'original'
         self._sources = {}
         self._loaded = set()
         self._players = {}
@@ -161,7 +164,7 @@ class UnifiedComparison(QWidget):
         brand.setStyleSheet('font-size:18px;font-weight:750;color:#f5f6fa;')
         header.addWidget(brand)
         header.addStretch()
-        ver = QLabel('v0.23.1')
+        ver = QLabel('v0.23.3')
         ver.setStyleSheet('color:#9da4b4;font-size:11px;')
         header.addWidget(ver)
         layout.addLayout(header)
@@ -222,6 +225,26 @@ class UnifiedComparison(QWidget):
         self.measure_status.setWordWrap(True)
         self.measure_status.setStyleSheet('color:#b8c1d3;font-size:11px;')
         layout.addWidget(self.measure_status)
+        advisor_title = QLabel('3. Suggestion de compression (mesures WAV)')
+        advisor_title.setStyleSheet('font-size:13px;font-weight:700;color:#f3f3f7;')
+        layout.addWidget(advisor_title)
+        advisory_row = QHBoxLayout()
+        self.intensity_buttons = {}
+        for key, label in (('natural','Naturel'), ('balanced','Équilibré'), ('punchy','Énergique')):
+            b = QPushButton(label)
+            b.clicked.connect(lambda _=False, v=key: self.set_intensity(v))
+            advisory_row.addWidget(b, 1)
+            self.intensity_buttons[key] = b
+        layout.addLayout(advisory_row)
+        self.advisor_status = QLabel('Suggestion disponible après analyse des WAV. Ce n’est pas un choix Hermes.')
+        self.advisor_status.setWordWrap(True)
+        self.advisor_status.setStyleSheet('color:#c7b8ff;font-size:11px;')
+        layout.addWidget(self.advisor_status)
+        self.audition_suggestion = QPushButton('▶ Écouter la suggestion (sans approuver)')
+        self.audition_suggestion.setEnabled(False)
+        self.audition_suggestion.clicked.connect(self.preview_suggestion)
+        layout.addWidget(self.audition_suggestion)
+        self._update_intensity_styles()
         transport = QHBoxLayout()
         self.play_button = QPushButton('▶ Écouter')
         self.play_button.clicked.connect(self.toggle)
@@ -281,6 +304,7 @@ class UnifiedComparison(QWidget):
         self._files.clear()
         self._reports.clear()
         self._diagnostics = {}
+        self._advisor_choice = 'original'
         self._approved = None
         self._active = (self._active[0], 'original')
         self._update_styles()
@@ -319,6 +343,7 @@ class UnifiedComparison(QWidget):
         metrics = self._diagnostics.get('metrics', {}).get(key)
         if not metrics:
             self.measure_status.setText('Mesures indisponibles : impossible de vérifier les différences WAV.')
+            self._update_advisor()
             return
         rms = metrics.get('rms_dbfs')
         peak = metrics.get('sample_peak_dbfs')
@@ -332,7 +357,46 @@ class UnifiedComparison(QWidget):
                 parts.append('Diff. RMS : ' + str(metrics.get('rms_delta_db')) + ' dB')
                 parts.append('Null RMS : ' + str(metrics.get('null_difference_rms_dbfs')) + ' dBFS')
         self.measure_status.setText('  |  '.join(parts))
+        self._update_advisor()
 
+
+    def set_intensity(self, intensity):
+        if intensity not in ('natural','balanced','punchy'):
+            return
+        self._intensity = intensity
+        self._update_intensity_styles()
+        self._update_advisor()
+
+    def _update_intensity_styles(self):
+        for key, button in self.intensity_buttons.items():
+            selected = key == self._intensity
+            button.setStyleSheet(
+                'QPushButton {background:#282c41;border:2px solid #8f91e8;color:white;font-weight:700;}'
+                if selected else
+                'QPushButton {background:#171920;border:1px solid #373c46;color:#c7cbd5;}')
+
+    def _update_advisor(self):
+        metrics = self._diagnostics.get('metrics', {})
+        mix = self._active[0]
+        if not metrics:
+            self._advisor_choice = 'original'
+            self.audition_suggestion.setEnabled(False)
+            self.advisor_status.setText('Analyse en attente. La suggestion ne modifie aucun son.')
+            return
+        result = suggest_compression(metrics, mix, self._intensity)
+        self._advisor_choice = result['variant']
+        self.audition_suggestion.setEnabled((mix, self._advisor_choice) in self._files)
+        label = COMP_NAMES[self._advisor_choice]
+        self.advisor_status.setText('✦ Analyse PCM : ' + MIX_NAMES[mix] + ' + ' + label
+                                    + ' · ' + result['reason']
+                                    + ' Suggestion seulement : ♥ requis pour le mastering.')
+
+    def preview_suggestion(self):
+        # An audition never implicitly approves mastering. This button is a
+        # convenience selector, not a new playback clock or an AI FX write.
+        key = (self._active[0], self._advisor_choice)
+        if key in self._files:
+            self.select_compression(self._advisor_choice)
 
     def _confirm_prepare(self):
         if self.is_busy() or len(self._sources) != 3:return
@@ -579,6 +643,7 @@ class UnifiedComparison(QWidget):
         self.waveform.setData(None)
         self.file_status.setText('Fichier actif : en attente')
         self.measure_status.setText('Mesures WAV : en attente')
+        self._update_advisor()
         self.prepare.setVisible(False)
         self.prepare.setEnabled(True)
         self.play_button.setEnabled(False)
