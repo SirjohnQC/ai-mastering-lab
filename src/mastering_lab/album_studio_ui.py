@@ -240,14 +240,14 @@ class AlbumABRenderWorker(QThread):
 
     def run(self):
         try:
-            from .album_ab_preview import render_preview
-            self.ready.emit(render_preview(self.master,self.analysis_row,self.output_dir))
+            from .album_tonal_preview import render_tonal_preview
+            self.ready.emit(render_tonal_preview(self.master,self.analysis_row,self.output_dir))
         except Exception as exc:
             self.failed.emit(f'{type(exc).__name__}: {exc}')
 
 
 class AlbumABDialog(QDialog):
-    """One synchronized transport for Original / Level preview, no master replacement."""
+    """One shared playback transport for original / loudness-matched tonal EQ."""
 
     def __init__(self, master, analysis, cache, parent=None):
         super().__init__(parent)
@@ -257,18 +257,20 @@ class AlbumABDialog(QDialog):
         self.preview=None
         self.worker=None
         self.source='original'
-        self.setWindowTitle('Album A/B · Original / Aperçu niveau')
+        self.setWindowTitle('Album A/B · Original / EQ de référence')
         self.setMinimumWidth(560)
         v=QVBoxLayout(self)
-        self.status=QLabel('Prépare une alternative de niveau limitée à ±1 dB. Aucun EQ automatique.')
+        self.status=QLabel('B = EQ tonale prudente d’après le WAV de référence; '
+                           'volume perçu comparé à A et True Peak vérifié. '
+                           'Si les écarts ne sont pas fiables, B ne sera pas créé.')
         self.status.setWordWrap(True)
         v.addWidget(self.status)
-        self.render_button=QPushButton('✦ Préparer l’aperçu ajusté')
+        self.render_button=QPushButton('✦ Préparer B · Tonal Match')
         self.render_button.clicked.connect(self._prepare)
         v.addWidget(self.render_button)
         controls=QHBoxLayout()
         self.original_button=QPushButton('A · Original')
-        self.adjusted_button=QPushButton('B · Ajusté')
+        self.adjusted_button=QPushButton('B · Tonal Match')
         self.adjusted_button.setEnabled(False)
         self.original_button.clicked.connect(lambda:self._switch('original'))
         self.adjusted_button.clicked.connect(lambda:self._switch('adjusted'))
@@ -331,7 +333,7 @@ class AlbumABDialog(QDialog):
         if self.worker is not None:
             return
         self.render_button.setEnabled(False)
-        self.status.setText('Création de l’aperçu et vérification True Peak en cours…')
+        self.status.setText('Création du Tonal Match, égalisation LUFS et mesure True Peak…')
         worker=AlbumABRenderWorker(self.master,self.analysis,self.cache,self)
         self.worker=worker
         worker.ready.connect(self._ready)
@@ -344,13 +346,18 @@ class AlbumABDialog(QDialog):
         self.preview=result
         self.adjusted_button.setEnabled(True)
         self.approve_button.setEnabled(True)
+        filters=result.get('eq_filters',[])
+        description=', '.join(
+            f'{p["frequency_hz"]} Hz {p["gain_db"]:+.2f} dB'
+            for p in filters)
         self.status.setText(
-            f'A/B prêt : gain {result["gain_db"]:+.2f} dB · '
+            f'B prêt : {description} · compensation LUFS {result["gain_db"]:+.2f} dB · '
+            f'B {result["measured_lufs"]:.2f} LUFS · '
             f'True Peak {result["verified_true_peak_dbtp"]:.2f} dBTP. '
-            'Aucun EQ ni master original modifié.')
+            'Master original intact; écoute critique requise.')
 
     def _failed(self,message):
-        self.status.setText('Aucun aperçu sûr disponible : '+message)
+        self.status.setText('Aucun Tonal Match prudent disponible : '+message)
 
     def _worker_finished(self):
         self.worker=None
