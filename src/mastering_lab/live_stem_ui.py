@@ -155,11 +155,12 @@ class LiveStemDialog(QDialog):
         # Preserve the real timeout reason, not a fake spontaneous crash.
         if self._forced_timeout or self._closing_engine:
             return
+        phase=self._startup_phase
         self._startup_phase='crash'
         self.watchdog.stop()
         self.state.setText(
             '⚠ JUCE s’est arrêté anormalement : '+self.process.errorString()+
-            ' · Dernière étape : '+self._startup_phase+
+            ' · Dernière étape : '+phase+
             ('. Détail : '+self._last_native_error[-180:]
              if self._last_native_error else '.'))
 
