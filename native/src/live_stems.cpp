@@ -350,9 +350,8 @@ int main(int argc,char** argv) {
     std::fflush(stderr);
     devices.removeAudioCallback(&player);
     player.setSource(nullptr);
-    // Release buffer references before stopping the disk-read thread;
-    // no reader is accessed by a stopped read-ahead worker.
-    mixer.releaseResources();
+    // player.setSource(nullptr) releases prepared stream resources.
+    // Keep the read-ahead worker alive until the player has detached.
     thread.stopThread(2000);
     return 0;
 }
