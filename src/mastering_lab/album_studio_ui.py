@@ -341,6 +341,9 @@ class AlbumABDialog(QDialog):
             return
         mode,style=self.mode_picker.currentData()
         self.preview=None
+        self.adjusted_button.setText(
+            'B · Creative '+style.title() if mode=='creative'
+            else 'B · Tonal Match')
         self.adjusted_button.setEnabled(False)
         self.approve_button.setEnabled(False)
         if self.source=='adjusted':
@@ -510,15 +513,23 @@ class AlbumABDialog(QDialog):
             for p in filters)
         kind=('Creative '+str(result.get('creative_style','')).title()
               if result.get('mode')=='creative' else 'Reference Match')
+        intensity=result.get('eq_strength',1.0)
+        intensity_note=(f' · intensité adaptée {intensity:.0%}' if intensity<1.0
+                        else ' · intensité normale')
         self.status.setText(
-            f'B prêt ({kind}) : {description} · compensation LUFS {result["gain_db"]:+.2f} dB · '
+            f'B prêt ({kind}){intensity_note} : {description} · compensation LUFS {result["gain_db"]:+.2f} dB · '
             f'B {result["measured_lufs"]:.2f} LUFS · '
             f'True Peak {result["verified_true_peak_dbtp"]:.2f} dBTP. '
             'Master original intact; écoute critique requise.')
 
     def _failed(self,message):
-        self.status.setText('⚠ Aperçu B non créé : '+message+
-                            ' · A reste inchangé; essaie une autre proposition.')
+        if 'exceeds the -1 dBTP ceiling' in message:
+            self.status.setText(
+                '⚠ Le style choisi dépasse encore le True Peak de −1 dBTP '
+                'même avec une EQ réduite. A reste intact; essaie Warm ou Air.')
+        else:
+            self.status.setText('⚠ Aperçu B non créé : '+message+
+                                ' · A reste inchangé; essaie une autre proposition.')
 
     def _worker_finished(self):
         self.worker=None
