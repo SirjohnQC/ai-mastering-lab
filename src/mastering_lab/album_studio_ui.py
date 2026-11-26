@@ -377,6 +377,21 @@ class AlbumABDialog(QDialog):
         super().closeEvent(event)
 
 
+class AlbumSelectableCard(QFrame):
+    """Clicking non-button portions selects the corresponding album song."""
+
+    def __init__(self, select_callback, parent=None):
+        super().__init__(parent)
+        self._select_callback = select_callback
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._select_callback()
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+
 class AlbumStudioPage(QWidget):
     """Single guided album workspace that never overwrites individual song sources."""
     backRequested = Signal()
@@ -409,7 +424,7 @@ class AlbumStudioPage(QWidget):
         heading.setStyleSheet('font-size:23px;font-weight:750;background:transparent')
         top.addWidget(heading)
         top.addStretch()
-        self.label = QLabel('v0.25.7 · Reference & Album Layout')
+        self.label = QLabel('v0.25.8 · Per-Song A/B Selection')
         self.label.setStyleSheet('color:#afb4c9;background:transparent')
         top.addWidget(self.label)
         layout.addLayout(top)
@@ -490,7 +505,7 @@ class AlbumStudioPage(QWidget):
         self.more_results_btn.hide()
         layout.addWidget(self.more_results_btn)
         self.ab_button=QPushButton('♫ Écouter Original / Ajusté (A/B)')
-        self.ab_button.setToolTip('Choisis une chanson de la liste après analyse pour préparer un aperçu non destructif.')
+        self.ab_button.setToolTip('Sélectionne une carte de chanson ou clique son bouton A/B pour choisir le master à écouter.')
         self.ab_button.clicked.connect(self._open_ab)
         self.ab_button.setEnabled(False)
         layout.addWidget(self.ab_button)
@@ -546,33 +561,68 @@ class AlbumStudioPage(QWidget):
                     or (self._recognition_worker is not None
                         and self._recognition_worker.isRunning()))
 
+    def _album_track_for_path(self, source):
+        if not source:
+            return None
+        return next((row for row in self.project['tracks']
+                     if row['path']==source), None)
+
+    def _ab_track_ready(self, source):
+        if self._busy() or self._intelligence_report is None:
+            return False
+        row=self._album_track_for_path(source)
+        if row is None:
+            return False
+        result=row.get('result') or {}
+        if (row.get('status')!='qc_pass' or result.get('status')!='qc_pass'
+                or not result.get('file') or not Path(result['file']).is_file()):
+            return False
+        report_rows=self._intelligence_report.get('tracks',[])
+        index=self.project['tracks'].index(row)
+        return (index<len(report_rows) and
+                report_rows[index].get('status')=='measured')
+
+    def _select_song(self, source):
+        if self._busy():
+            return
+        for i in range(self.track_list.count()):
+            item=self.track_list.item(i)
+            if item.data(Qt.UserRole)==source:
+                self.track_list.setCurrentItem(item)
+                self._update_ab_button()
+                return
+
     def _update_ab_button(self,*_):
         selected=self.track_list.currentItem()
         source=selected.data(Qt.UserRole) if selected is not None else None
-        report=self._intelligence_report
-        eligible=False
-        if not self._busy() and source and report:
-            for index,row in enumerate(self.project['tracks']):
-                if row['path']==source and index<len(report.get('tracks',[])):
-                    eligible=report['tracks'][index].get('status')=='measured'
-                    break
-        self.ab_button.setEnabled(eligible)
+        self.ab_button.setEnabled(self._ab_track_ready(source))
+        track=self._album_track_for_path(source)
+        self.ab_button.setText(
+            '♫ A/B · '+track['title'] if track else
+            '♫ Sélectionne une chanson pour écouter A/B')
 
     def _open_ab(self):
         selected=self.track_list.currentItem()
-        if self._busy() or selected is None or self._intelligence_report is None:
+        source=selected.data(Qt.UserRole) if selected is not None else None
+        self._open_ab_for_song(source)
+
+    def _open_ab_for_song(self, source):
+        # Resolve the requested source path directly. Never rely on a stale
+        # QListWidget selection or a numerical row index after reordering.
+        if not self._ab_track_ready(source):
+            QMessageBox.information(
+                self,'Album A/B',
+                'Choisis une chanson dont le master QC a été analysé. '
+                'Lance d’abord Analyser la cohérence.')
             return
-        source=selected.data(Qt.UserRole)
-        for index,row in enumerate(self.project['tracks']):
-            if row['path'] != source:
-                continue
-            analysis=self._intelligence_report['tracks'][index]
-            result=row.get('result') or {}
-            if analysis.get('status')!='measured' or not Path(result.get('file','')).is_file():
-                return
-            dlg=AlbumABDialog(result['file'],analysis,self.export_dir/'ab_previews',self)
-            dlg.exec()
-            return
+        row=self._album_track_for_path(source)
+        index=self.project['tracks'].index(row)
+        analysis=self._intelligence_report['tracks'][index]
+        master=(row['result'] or {})['file']
+        self._select_song(source)
+        dlg=AlbumABDialog(master,analysis,self.export_dir/'ab_previews',self)
+        dlg.setWindowTitle('Album A/B · '+row['title'])
+        dlg.exec()
 
     def _toggle_results(self, expanded):
         self.consistency_detail.setMaximumHeight(16777215 if expanded else 88)
@@ -954,11 +1004,15 @@ class AlbumStudioPage(QWidget):
 
     def _refresh(self):
         self._rebuilding_track_list = True
+        previous=self.track_list.currentItem()
+        selected_path=previous.data(Qt.UserRole) if previous is not None else None
         self.track_list._hovered_item = None
         self.track_list.clear()
         tracks = self.project['tracks']
         for i, track in enumerate(tracks):
-            card = QFrame()
+            path=track['path']
+            card = AlbumSelectableCard(lambda source=path: self._select_song(source))
+            card.setToolTip('Clique pour sélectionner cette chanson; glisse ⠿ pour changer l’ordre.')
             card.setStyleSheet('QFrame { background:#1b1d29;border:1px solid #3a3d50;border-radius:9px }'
                                'QLabel {background:transparent;border:none}')
             line = QHBoxLayout(card)
@@ -968,12 +1022,14 @@ class AlbumStudioPage(QWidget):
             line.addWidget(number)
             info = QVBoxLayout()
             name = QLabel(track['title'])
+            name.setAttribute(Qt.WA_TransparentForMouseEvents, True)
             name.setStyleSheet('font-size:14px;font-weight:650;background:transparent')
             status = track.get('status', 'waiting')
             kind = 'Stems · mixage requis' if track['kind']=='stems' else 'WAV stéréo'
             detail = QLabel(f'{kind}   ·   {status}' + (f"  ·  {track['error'][:90]}" if track.get('error') else '') + ('  ·  3 variantes WAV disponibles' if (track.get('result') or {}).get('album_candidates') else ''))
             detail.setStyleSheet('color:#b3b9c8;font-size:11px;background:transparent')
             detail.setWordWrap(True)
+            detail.setAttribute(Qt.WA_TransparentForMouseEvents, True)
             result = track.get('result') or {}
             selected = result.get('album_selected_candidate')
             selection = result.get('album_ai_selection') or {}
@@ -982,6 +1038,7 @@ class AlbumStudioPage(QWidget):
                 mode = '✦ Choix IA' if selection.get('mode') == 'hermes' else '⚠ Choix secours'
                 choice = QLabel(f'{mode} : {label}  →  Master')
                 choice.setStyleSheet('color:#a6e2bd;font-size:12px;font-weight:650;background:transparent')
+                choice.setAttribute(Qt.WA_TransparentForMouseEvents, True)
                 info.addWidget(name)
                 info.addWidget(choice)
                 detail.setText(detail.text() + f'  ·  Master : {label}')
@@ -1012,6 +1069,12 @@ class AlbumStudioPage(QWidget):
                 view.setEnabled(not self._busy())
                 view.clicked.connect(lambda _, n=i: self._open_candidates(n))
                 line.addWidget(view)
+            if self._ab_track_ready(path):
+                ab_track_button=QPushButton('♫ A/B')
+                ab_track_button.setToolTip('Comparer le master de '+track['title'])
+                ab_track_button.clicked.connect(
+                    lambda _, source=path: self._open_ab_for_song(source))
+                line.addWidget(ab_track_button)
             drag_handle = AlbumDragHandle(self.track_list, card)
             line.addWidget(drag_handle)
             for text, cb in (('×', lambda _, n=i: self._remove(n)),):
@@ -1026,6 +1089,12 @@ class AlbumStudioPage(QWidget):
             self.track_list.addItem(item)
             drag_handle.item = item
             self.track_list.setItemWidget(item, card)
+        if selected_path:
+            for index in range(self.track_list.count()):
+                item=self.track_list.item(index)
+                if item.data(Qt.UserRole)==selected_path:
+                    self.track_list.setCurrentItem(item)
+                    break
         self._rebuilding_track_list = False
         self.track_list.setDragEnabled(not self._busy())
         self.track_list.setAcceptDrops(not self._busy())
