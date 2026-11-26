@@ -91,6 +91,28 @@ def discover_album(folder):
     return songs
 
 
+
+def reorder_tracks(project, ordered_paths):
+    """Reorder complete track records without changing QC, sources or references.
+
+    Exact permutation required: no missing, duplicate or extra paths.
+    The independent external reference is not part of the tracks collection.
+    """
+    tracks = project.get('tracks')
+    if not isinstance(tracks, list):
+        raise ValueError('Invalid track list.')
+    existing = [row['path'] for row in tracks]
+    requested = list(ordered_paths)
+    if (len(existing) != len(set(existing))
+            or len(existing) != len(requested)
+            or len(requested) != len(set(requested))
+            or set(existing) != set(requested)):
+        raise ValueError('Track reorder must preserve every original track exactly once.')
+    lookup = {row['path']: row for row in tracks}
+    project['tracks'] = [lookup[path] for path in requested]
+    return project
+
+
 def album_summary(project):
     entries = []
     for idx, row in enumerate(project['tracks'], start=1):

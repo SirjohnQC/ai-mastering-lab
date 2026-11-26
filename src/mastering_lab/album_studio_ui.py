@@ -5,12 +5,13 @@ import json
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel,
-    QPushButton, QLineEdit, QComboBox, QFileDialog, QMessageBox, QProgressBar, QScrollArea)
+    QPushButton, QLineEdit, QComboBox, QFileDialog, QMessageBox, QProgressBar, QScrollArea,
+    QListWidget, QListWidgetItem, QAbstractItemView, QApplication)
 
 from .album_project import (empty_project, load_project, save_project,
-                            add_entries, discover_album, album_summary)
+                            add_entries, discover_album, album_summary, reorder_tracks)
 from .album_match_advisor import advise_album, localized_card
 from .ui_language import get_language
 
@@ -109,6 +110,64 @@ class AlbumIntelligenceWorker(QThread):
             self.failed.emit(f'{type(exc).__name__}: {exc}')
 
 
+class AlbumOrderList(QListWidget):
+    """Allow a dedicated card handle to initiate the standard internal move."""
+
+    orderDropped = Signal()
+
+    def dropEvent(self, event):
+        if event.source() is not self or self.dragDropMode() != QAbstractItemView.InternalMove:
+            event.ignore()
+            return
+        before = [self.item(i).data(Qt.UserRole) for i in range(self.count())]
+        super().dropEvent(event)
+        after = [self.item(i).data(Qt.UserRole) for i in range(self.count())]
+        if event.isAccepted() and after != before:
+            self.orderDropped.emit()
+
+    def begin_handle_drag(self, item):
+        if self.dragDropMode() != QAbstractItemView.InternalMove:
+            return
+        if item is None or self.row(item) < 0:
+            return
+        self.setCurrentItem(item)
+        self.startDrag(Qt.MoveAction)
+
+
+class AlbumDragHandle(QLabel):
+    """Explicit handle: embedded labels/buttons otherwise consume Qt mouse events."""
+
+    def __init__(self, track_list, parent=None):
+        super().__init__('⠿', parent)
+        self.track_list = track_list
+        self.item = None
+        self._press = None
+        self.setToolTip('Glisser ici pour réordonner la chanson')
+        self.setStyleSheet('font-size:20px;color:#a8a4da;')
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._press = event.position().toPoint()
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if (self._press is not None and
+                event.buttons() & Qt.LeftButton and
+                (event.position().toPoint()-self._press).manhattanLength()
+                >= QApplication.startDragDistance()):
+            self._press = None
+            self.track_list.begin_handle_drag(self.item)
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._press = None
+        super().mouseReleaseEvent(event)
+
+
 class AlbumStudioPage(QWidget):
     """Single guided album workspace that never overwrites individual song sources."""
     backRequested = Signal()
@@ -141,7 +200,7 @@ class AlbumStudioPage(QWidget):
         heading.setStyleSheet('font-size:23px;font-weight:750;background:transparent')
         top.addWidget(heading)
         top.addStretch()
-        self.label = QLabel('v0.25.3 · Standalone Album WAV Reference')
+        self.label = QLabel('v0.25.4 · Drag & Drop Album Order')
         self.label.setStyleSheet('color:#afb4c9;background:transparent')
         top.addWidget(self.label)
         layout.addLayout(top)
@@ -215,17 +274,23 @@ class AlbumStudioPage(QWidget):
         self.consistency_detail.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.consistency_detail.setStyleSheet('color:#aebbd1;background:transparent;font-size:11px;')
         layout.addWidget(self.consistency_detail)
-        scroller = QScrollArea()
-        scroller.setWidgetResizable(True)
-        scroller.setFrameShape(QFrame.NoFrame)
-        scroller.setStyleSheet('QScrollArea {background:transparent;border:none}')
-        self.holder = QWidget()
-        self.holder.setStyleSheet('background:transparent')
-        self.rows = QVBoxLayout(self.holder)
-        self.rows.setSpacing(6)
-        self.rows.setAlignment(Qt.AlignTop)
-        scroller.setWidget(self.holder)
-        layout.addWidget(scroller, 1)
+        self.order_hint = QLabel('↕ Glisse les chansons pour changer leur ordre (sauvegarde automatique).')
+        self.order_hint.setStyleSheet('color:#afbbcf;background:transparent;font-size:11px;')
+        layout.addWidget(self.order_hint)
+        self.track_list = AlbumOrderList(self)
+        self.track_list.setObjectName('albumTrackOrder')
+        self.track_list.setDragDropMode(QAbstractItemView.InternalMove)
+        self.track_list.setDefaultDropAction(Qt.MoveAction)
+        self.track_list.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.track_list.setSpacing(7)
+        self.track_list.setStyleSheet(
+            'QListWidget#albumTrackOrder { background:transparent; border:none; }'
+            'QListWidget#albumTrackOrder::item {background:transparent; border:none; padding:0;}'
+            'QListWidget#albumTrackOrder::item:selected {background:transparent;}')
+        self._rebuilding_track_list = False
+        self.track_list.model().rowsMoved.connect(self._schedule_track_reorder)
+        self.track_list.orderDropped.connect(self._schedule_track_reorder)
+        layout.addWidget(self.track_list, 1)
         self.progress_text = QLabel('Prêt à organiser ton album.')
         self.progress_text.setStyleSheet('background:transparent;color:#b8c4de')
         layout.addWidget(self.progress_text)
@@ -526,10 +591,34 @@ class AlbumStudioPage(QWidget):
         self.project['tracks'].pop(index)
         self._save(); self._refresh()
 
+    def _schedule_track_reorder(self, *_):
+        # Qt emits rowsMoved as it performs the internal drag; read the
+        # final model order once the drop event finishes.
+        if not self._rebuilding_track_list:
+            QTimer.singleShot(0, self._commit_track_reorder)
+
+    def _commit_track_reorder(self):
+        if self._busy() or self._rebuilding_track_list:
+            return
+        ordered = [self.track_list.item(i).data(Qt.UserRole)
+                   for i in range(self.track_list.count())]
+        current = [track['path'] for track in self.project['tracks']]
+        if ordered == current:
+            return
+        try:
+            reorder_tracks(self.project, ordered)
+        except ValueError as exc:
+            QMessageBox.warning(self, 'Ordre de l’album', str(exc))
+            self._refresh()
+            return
+        self._save()
+        self._intelligence_report = None
+        self.consistency_detail.clear()
+        self._refresh()
+
     def _refresh(self):
-        while self.rows.count():
-            item = self.rows.takeAt(0)
-            if item.widget(): item.widget().deleteLater()
+        self._rebuilding_track_list = True
+        self.track_list.clear()
         tracks = self.project['tracks']
         for i, track in enumerate(tracks):
             card = QFrame()
@@ -586,15 +675,26 @@ class AlbumStudioPage(QWidget):
                 view.setEnabled(not self._busy())
                 view.clicked.connect(lambda _, n=i: self._open_candidates(n))
                 line.addWidget(view)
-            for text, cb in (('↑', lambda _, n=i: self._move(n,-1)),
-                             ('↓', lambda _, n=i: self._move(n,1)),
-                             ('×', lambda _, n=i: self._remove(n))):
+            drag_handle = AlbumDragHandle(self.track_list, card)
+            line.addWidget(drag_handle)
+            for text, cb in (('×', lambda _, n=i: self._remove(n)),):
                 button = QPushButton(text)
                 button.setFixedWidth(32)
                 button.setEnabled(not self._busy())
                 button.clicked.connect(cb)
                 line.addWidget(button)
-            self.rows.addWidget(card)
+            item = QListWidgetItem()
+            item.setData(Qt.UserRole, track['path'])
+            item.setSizeHint(card.sizeHint())
+            self.track_list.addItem(item)
+            drag_handle.item = item
+            self.track_list.setItemWidget(item, card)
+        self._rebuilding_track_list = False
+        self.track_list.setDragEnabled(not self._busy())
+        self.track_list.setAcceptDrops(not self._busy())
+        self.track_list.setDragDropMode(
+            QAbstractItemView.InternalMove if not self._busy()
+            else QAbstractItemView.NoDragDrop)
         nstereo = sum(t['kind']=='stereo' for t in tracks)
         nstems = len(tracks) - nstereo
         self.summary.setText(f'{len(tracks)} chansons · {nstereo} WAV stéréo · {nstems} projets stems')
