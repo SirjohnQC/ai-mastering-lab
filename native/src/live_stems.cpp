@@ -311,17 +311,17 @@ int main(int argc,char** argv) {
         }
     }
     reply(event("progress","Attaching streaming audio source"));
-    std::fprintf(stderr,"[LIVE STARTUP] before player.setSource\\n");
+    std::fprintf(stderr,"[LIVE STARTUP] before player.setSource\n");
     std::fflush(stderr);
     AudioSourcePlayer player;
     player.setSource(&mixer);
-    std::fprintf(stderr,"[LIVE STARTUP] after player.setSource\\n");
+    std::fprintf(stderr,"[LIVE STARTUP] after player.setSource\n");
     std::fflush(stderr);
     reply(event("progress","Starting JUCE audio callback"));
-    std::fprintf(stderr,"[LIVE STARTUP] before devices.addAudioCallback\\n");
+    std::fprintf(stderr,"[LIVE STARTUP] before devices.addAudioCallback\n");
     std::fflush(stderr);
     devices.addAudioCallback(&player);
-    std::fprintf(stderr,"[LIVE STARTUP] after devices.addAudioCallback\\n");
+    std::fprintf(stderr,"[LIVE STARTUP] after devices.addAudioCallback\n");
     std::fflush(stderr);
     {
         auto* msg=new DynamicObject();
@@ -346,7 +346,7 @@ int main(int argc,char** argv) {
         if (!mixer.command(payload,error)) reply(event("error",error));
         else reply(mixer.status());
     }
-    std::fprintf(stderr,"[LIVE STOP] disconnecting device callback\\n");
+    std::fprintf(stderr,"[LIVE STOP] disconnecting device callback\n");
     std::fflush(stderr);
     devices.removeAudioCallback(&player);
     player.setSource(nullptr);
