@@ -310,7 +310,7 @@ class AutoStudioPage(QWidget):
         root.setContentsMargins(6, 2, 6, 8)
         root.setSpacing(18)
         header = QHBoxLayout()
-        name = QLabel('AUTO STUDIO')
+        name = QLabel('FRANKENSTEM  ·  AUTO STUDIO')
         name.setStyleSheet('background:transparent;font-size:20px;font-weight:800;color:#f0efff;')
         header.addWidget(name)
         header.addStretch()
