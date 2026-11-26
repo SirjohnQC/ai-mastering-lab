@@ -113,6 +113,18 @@ class AlbumIntelligenceWorker(QThread):
 class AlbumOrderList(QListWidget):
     """Allow a dedicated card handle to initiate the standard internal move."""
 
+    orderDropped = Signal()
+
+    def dropEvent(self, event):
+        if event.source() is not self or self.dragDropMode() != QAbstractItemView.InternalMove:
+            event.ignore()
+            return
+        before = [self.item(i).data(Qt.UserRole) for i in range(self.count())]
+        super().dropEvent(event)
+        after = [self.item(i).data(Qt.UserRole) for i in range(self.count())]
+        if event.isAccepted() and after != before:
+            self.orderDropped.emit()
+
     def begin_handle_drag(self, item):
         if self.dragDropMode() != QAbstractItemView.InternalMove:
             return
@@ -277,6 +289,7 @@ class AlbumStudioPage(QWidget):
             'QListWidget#albumTrackOrder::item:selected {background:transparent;}')
         self._rebuilding_track_list = False
         self.track_list.model().rowsMoved.connect(self._schedule_track_reorder)
+        self.track_list.orderDropped.connect(self._schedule_track_reorder)
         layout.addWidget(self.track_list, 1)
         self.progress_text = QLabel('Prêt à organiser ton album.')
         self.progress_text.setStyleSheet('background:transparent;color:#b8c4de')
