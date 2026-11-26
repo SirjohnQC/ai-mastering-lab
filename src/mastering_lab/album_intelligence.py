@@ -74,18 +74,26 @@ def spectrum_profile(source: Path):
             'note':'Relative sampled FFT energy (not perceived tonal balance or EQ advice).'}
 
 
-def compare_album(project: dict, *, reference_index: int, profile_fn=None):
+def compare_album(project: dict, *, reference_index: int | None = None, external_reference_wav=None, profile_fn=None, external_measure_fn=None):
     rows = project.get('tracks',[])
     if not isinstance(rows,list) or not 1 <= len(rows) <= MAX_TRACKS:
         raise ValueError('Album must have 1-80 tracks.')
-    if not isinstance(reference_index,int) or not 0 <= reference_index < len(rows):
-        raise ValueError('Choose a valid album reference track.')
-    reference_path = _master_for(rows[reference_index])
-    if reference_path is None:
-        raise ValueError('The reference requires a completed QC-pass master WAV.')
+    if external_reference_wav is not None:
+        from .album_external_reference import external_reference_metrics
+        ref_result = external_reference_metrics(external_reference_wav, measurer=external_measure_fn)
+        reference_path = Path(ref_result['file'])
+        reference_index = None
+        reference_title = reference_path.stem
+    else:
+        if not isinstance(reference_index,int) or not 0 <= reference_index < len(rows):
+            raise ValueError('Choose a valid album reference track.')
+        reference_path = _master_for(rows[reference_index])
+        if reference_path is None:
+            raise ValueError('The reference requires a completed QC-pass master WAV.')
+        ref_result = rows[reference_index]['result']
+        reference_title = rows[reference_index].get('title','')
     profile = profile_fn or spectrum_profile
     ref_spec = profile(reference_path)
-    ref_result = rows[reference_index]['result']
     ref_shares = np.asarray(ref_spec['band_shares'],dtype='float64')
     if ref_shares.shape!=(len(BANDS),) or not np.isfinite(ref_shares).all() or np.any(ref_shares<0):
         raise ValueError('Invalid reference spectrum.')
@@ -127,7 +135,8 @@ def compare_album(project: dict, *, reference_index: int, profile_fn=None):
                                 'status':'analysis_error','note':f'{type(exc).__name__}: {exc}'})
     return {'schema_version':1,'album':project.get('album','Album'),
             'reference_index':reference_index,
-            'reference_title':rows[reference_index].get('title',''),
+            'reference_title':reference_title,
+            'reference_kind':'standalone_wav' if external_reference_wav is not None else 'album_qc_master',
             'bands_hz':[list(x) for x in BANDS],'tracks':evaluations,
             'disclaimer':('Read-only mastering comparison. Relative spectrum from sampled FFTs; '
                           'LUFS and true peak from existing QC reports. Differences may be artistic. '

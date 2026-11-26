@@ -32,7 +32,11 @@ def advise_album(report: dict) -> dict:
     if not isinstance(tracks, list) or not tracks:
         raise ValueError('Missing album tracks.')
     ref_index = report.get('reference_index')
-    if not isinstance(ref_index, int) or not 0 <= ref_index < len(tracks):
+    external = report.get('reference_kind') == 'standalone_wav'
+    if external:
+        if ref_index is not None:
+            raise ValueError('External reference must not be an album track.')
+    elif not isinstance(ref_index, int) or not 0 <= ref_index < len(tracks):
         raise ValueError('Invalid album reference.')
     cards = []
     for index, row in enumerate(tracks):
