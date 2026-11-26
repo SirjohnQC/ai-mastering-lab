@@ -1437,7 +1437,7 @@ class AlbumStudioPage(QWidget):
                     lambda _, source=path: self._open_ab_for_song(source))
                 line.addWidget(ab_track_button)
             if track['kind']=='stems':
-                fx_btn=QPushButton('⚡ Stem Inspector / FX')
+                fx_btn=QPushButton('⚡ FX Stems')
                 fx_btn.clicked.connect(lambda _, source=path: self._stem_fx_for(source))
                 line.addWidget(fx_btn)
             drag_handle = AlbumDragHandle(self.track_list, card)
