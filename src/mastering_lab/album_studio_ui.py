@@ -163,15 +163,15 @@ class AlbumStudioPage(QWidget):
         self.import_master_btn.setToolTip('Vérification indépendante du WAV et du rapport .qc.json en local.')
         self.import_master_btn.clicked.connect(self._recognize_existing)
         layout.addWidget(self.import_master_btn)
-        self.recognition_status=QLabel('Les WAV sans rapport QC restent en attente.')
+        self.recognition_status=QLabel('Les masters déjà validés sont reconnus avec leur .qc.json. Les autres WAV restent en attente.')
         self.recognition_status.setWordWrap(True)
         self.recognition_status.setStyleSheet('color:#aebbd1;font-size:11px;')
         layout.addWidget(self.recognition_status)
         reference_row = QHBoxLayout()
-        reference_caption = QLabel('Chanson de référence :')
+        reference_caption = QLabel('Référence d’album (master QC) :')
         reference_row.addWidget(reference_caption)
         self.reference_picker = QComboBox()
-        self.reference_picker.setToolTip('Choisis un master QC réussi comme référence pour comparer les autres.')
+        self.reference_picker.setToolTip('Ton propre master validé sert à comparer l’album. Distinct des références musicales de Reference Learning.')
         self.reference_picker.currentIndexChanged.connect(self._reference_changed)
         reference_row.addWidget(self.reference_picker, 1)
         self.compare_album_btn = QPushButton('✦ Analyser la cohérence')
@@ -406,6 +406,12 @@ class AlbumStudioPage(QWidget):
         if count:
             self._save()
             self._refresh()
+            # An existing QC sidecar triggers read-only verification automatically.
+            # For fresh or unmastered WAVs no action is taken; there is never
+            # an implicit FFmpeg render or Auto Master here.
+            if any(kind=='stereo' and Path(path).with_suffix('.qc.json').is_file()
+                   for path,kind in items):
+                self._recognize_existing()
         if errors:
             QMessageBox.warning(self, 'Fichiers ignorés', '\n'.join(errors[:8]))
 
