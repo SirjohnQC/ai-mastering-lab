@@ -232,16 +232,21 @@ class AlbumABRenderWorker(QThread):
     ready = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, master, analysis_row, output_dir, parent=None):
+    def __init__(self, master, analysis_row, output_dir, parent=None, *,
+                 mode='match', creative_style='warm'):
         super().__init__(parent)
         self.master=master
         self.analysis_row=dict(analysis_row)
         self.output_dir=output_dir
+        self.mode=mode
+        self.creative_style=creative_style
 
     def run(self):
         try:
             from .album_tonal_preview import render_tonal_preview
-            self.ready.emit(render_tonal_preview(self.master,self.analysis_row,self.output_dir))
+            self.ready.emit(render_tonal_preview(
+                self.master,self.analysis_row,self.output_dir,
+                mode=self.mode,creative_style=self.creative_style))
         except Exception as exc:
             self.failed.emit(f'{type(exc).__name__}: {exc}')
 
@@ -260,9 +265,19 @@ class AlbumABDialog(QDialog):
         self.setWindowTitle('Album A/B · Original / EQ de référence')
         self.setMinimumWidth(560)
         v=QVBoxLayout(self)
-        self.status=QLabel('B = EQ tonale prudente d’après le WAV de référence; '
-                           'volume perçu comparé à A et True Peak vérifié. '
-                           'Si les écarts ne sont pas fiables, B ne sera pas créé.')
+        from .album_tonal_preview import preview_decision
+        try:
+            self.match_decision=preview_decision(self.analysis)
+        except (ValueError,TypeError,KeyError):
+            self.match_decision={'status':'uncertain','proposal':None}
+        self.mode_picker=QComboBox()
+        self.mode_picker.addItem('Reference Match · Cohérence',('match',''))
+        self.mode_picker.addItem('Creative · Warm',('creative','warm'))
+        self.mode_picker.addItem('Creative · Presence',('creative','presence'))
+        self.mode_picker.addItem('Creative · Air',('creative','air'))
+        self.mode_picker.currentIndexChanged.connect(self._mode_changed)
+        v.addWidget(self.mode_picker)
+        self.status=QLabel('')
         self.status.setWordWrap(True)
         v.addWidget(self.status)
         self.render_button=QPushButton('✦ Préparer B · Tonal Match')
@@ -296,6 +311,42 @@ class AlbumABDialog(QDialog):
         self.player.setAudioOutput(self.audio)
         self.player.positionChanged.connect(self._position_changed)
         self.player.setSource(QUrl.fromLocalFile(str(self.master)))
+        self._mode_changed()
+
+    def _mode_changed(self, *_):
+        if self.worker is not None:
+            return
+        mode,style=self.mode_picker.currentData()
+        self.preview=None
+        self.adjusted_button.setEnabled(False)
+        self.approve_button.setEnabled(False)
+        if self.source=='adjusted':
+            self._switch('original')
+        if mode=='creative':
+            description={'warm':'plus chaleureux','presence':'plus de présence',
+                         'air':'plus d’air et de clarté'}[style]
+            self.status.setText(
+                f'Alternative créative : {description}. Ce n’est pas une correction '
+                'nécessaire, ni une promesse de meilleur son. '
+                'B sera égalisé au loudness de A et vérifié en True Peak.')
+            self.render_button.setText('✦ Préparer B · Creative '+style.title())
+            self.render_button.setEnabled(True)
+        else:
+            state=self.match_decision['status']
+            self.render_button.setText('✦ Préparer B · Tonal Match')
+            if state=='already_close':
+                self.status.setText(
+                    '✓ Déjà proche de la référence : aucune correction EQ justifiée. '
+                    'Garde A, ou choisis une alternative Creative pour expérimenter.')
+            elif state=='uncertain':
+                self.status.setText(
+                    '⚠ Comparaison spectrale incertaine : aucun matching EQ automatique. '
+                    'Tu peux essayer une couleur Creative, sans la confondre avec un match.')
+            else:
+                self.status.setText(
+                    'Tonal Match disponible : EQ douce selon la comparaison. '
+                    'Le loudness A/B et le True Peak seront contrôlés.')
+            self.render_button.setEnabled(state=='available')
 
     def _position_changed(self,ms):
         self.position.setText(f'{ms//60000}:{(ms//1000)%60:02d}')
@@ -332,9 +383,16 @@ class AlbumABDialog(QDialog):
     def _prepare(self):
         if self.worker is not None:
             return
+        mode,style=self.mode_picker.currentData()
+        if mode=='match' and self.match_decision['status']!='available':
+            self._mode_changed()
+            return
         self.render_button.setEnabled(False)
-        self.status.setText('Création du Tonal Match, égalisation LUFS et mesure True Peak…')
-        worker=AlbumABRenderWorker(self.master,self.analysis,self.cache,self)
+        self.mode_picker.setEnabled(False)
+        self.status.setText('Préparation de B, égalisation LUFS et vérification True Peak…')
+        worker=AlbumABRenderWorker(
+            self.master,self.analysis,self.cache,self,
+            mode=mode,creative_style=style or 'warm')
         self.worker=worker
         worker.ready.connect(self._ready)
         worker.failed.connect(self._failed)
@@ -350,18 +408,27 @@ class AlbumABDialog(QDialog):
         description=', '.join(
             f'{p["frequency_hz"]} Hz {p["gain_db"]:+.2f} dB'
             for p in filters)
+        kind=('Creative '+str(result.get('creative_style','')).title()
+              if result.get('mode')=='creative' else 'Reference Match')
         self.status.setText(
-            f'B prêt : {description} · compensation LUFS {result["gain_db"]:+.2f} dB · '
+            f'B prêt ({kind}) : {description} · compensation LUFS {result["gain_db"]:+.2f} dB · '
             f'B {result["measured_lufs"]:.2f} LUFS · '
             f'True Peak {result["verified_true_peak_dbtp"]:.2f} dBTP. '
             'Master original intact; écoute critique requise.')
 
     def _failed(self,message):
-        self.status.setText('Aucun Tonal Match prudent disponible : '+message)
+        self.status.setText('⚠ Aperçu B non créé : '+message+
+                            ' · A reste inchangé; essaie une autre proposition.')
 
     def _worker_finished(self):
         self.worker=None
-        self.render_button.setEnabled(True)
+        self.mode_picker.setEnabled(True)
+        if not self.preview:
+            mode,_=self.mode_picker.currentData()
+            self.render_button.setEnabled(
+                mode=='creative' or self.match_decision['status']=='available')
+        else:
+            self.render_button.setEnabled(True)
 
     def _approve(self):
         if not self.preview:
@@ -431,7 +498,7 @@ class AlbumStudioPage(QWidget):
         heading.setStyleSheet('font-size:23px;font-weight:750;background:transparent')
         top.addWidget(heading)
         top.addStretch()
-        self.label = QLabel('v0.25.8 · Per-Song A/B Selection')
+        self.label = QLabel('v0.26.1 · Smart A/B Creative')
         self.label.setStyleSheet('color:#afb4c9;background:transparent')
         top.addWidget(self.label)
         layout.addLayout(top)
