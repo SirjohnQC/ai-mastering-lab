@@ -348,6 +348,7 @@ class AlbumStudioPage(QWidget):
             'QListWidget#albumTrackOrder::item:selected {background:transparent;}')
         self._rebuilding_track_list = False
         self.track_list.orderRequested.connect(self._on_song_card_drop)
+        self.track_list.model().rowsMoved.connect(self._schedule_track_reorder)
         layout.addWidget(self.track_list, 1)
         self.progress_text = QLabel('Prêt à organiser ton album.')
         self.progress_text.setStyleSheet('background:transparent;color:#b8c4de')
