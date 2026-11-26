@@ -824,6 +824,7 @@ class StemSaturationDialog(QDialog):
         self.rows=[]
         self.analysis_worker=None
         self.advice_by_path={}
+        self.measured_advice={}
         self.setWindowTitle('FRANKENSTEM · Stem Surgery')
         self.setMinimumWidth(720)
         root=QVBoxLayout(self)
@@ -840,6 +841,10 @@ class StemSaturationDialog(QDialog):
         suggested=QPushButton('✦ Pré-sélectionner voix et basse (à confirmer)')
         suggested.clicked.connect(self._select_safe_suggestions)
         root.addWidget(suggested)
+        self.use_inspection=QPushButton('✓ Pré-sélectionner les essais recommandés par mesures')
+        self.use_inspection.setEnabled(False)
+        self.use_inspection.clicked.connect(self._select_measured_candidates)
+        root.addWidget(self.use_inspection)
         scroll=QScrollArea()
         scroll.setWidgetResizable(True)
         inner=QWidget()
@@ -901,6 +906,7 @@ class StemSaturationDialog(QDialog):
 
     def _analysis_ready(self,rows):
         candidates=0
+        self.measured_advice={row['file']:row['advisor'] for row in rows}
         for row in rows:
             advice=row['advisor']
             if advice['status']=='candidate':
@@ -913,6 +919,7 @@ class StemSaturationDialog(QDialog):
                              f' · HF {100*metrics.get("mean_high_frequency_ratio",0):.1f}%'
                              if metrics else '')
                 label.setText(marker+metric_text+' · '+advice['reason'])
+        self.use_inspection.setEnabled(True)
         self.summary.setText(
             f'Inspection terminée : {len(rows)} stems analysés; '
             f'{candidates} essai(s) envisageable(s). '
@@ -937,13 +944,33 @@ class StemSaturationDialog(QDialog):
             source,cache,style.currentData(),drive.value(),wet.value()/100,self)
         dlg.exec()
 
-    def closeEvent(self,event):
+    def _can_exit(self):
         if self.analysis_worker is not None:
             QMessageBox.information(self,'Stem Inspector',
                                     'Analyse des stems en cours.')
+            return False
+        return True
+
+    def closeEvent(self,event):
+        if not self._can_exit():
             event.ignore()
             return
         super().closeEvent(event)
+
+    def reject(self):
+        if self._can_exit():
+            super().reject()
+
+    def accept(self):
+        if self._can_exit():
+            super().accept()
+
+    def _select_measured_candidates(self):
+        # Preselect only measured audition candidates, never silence / clipped
+        # stems or drums; user must still click OK to approve.
+        for file,enabled,style,drive,wet in self.rows:
+            status=self.measured_advice.get(file,{})
+            enabled.setChecked(status.get('recommendation')=='audition_only')
 
     def _select_safe_suggestions(self):
         from .auto_mix_candidates import _group
@@ -999,7 +1026,7 @@ class AlbumStudioPage(QWidget):
         heading.setStyleSheet('font-size:23px;font-weight:750;background:transparent')
         top.addWidget(heading)
         top.addStretch()
-        self.label = QLabel('v0.26.5 · FRANKENSTEM Stem Surgery')
+        self.label = QLabel('v0.26.6 · Stem Inspector + FX Advisor')
         self.label.setStyleSheet('color:#afb4c9;background:transparent')
         top.addWidget(self.label)
         layout.addLayout(top)
