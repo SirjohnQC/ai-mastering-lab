@@ -439,6 +439,11 @@ class AlbumABDialog(QDialog):
 
     def _switch(self, source):
         if source==self.source:
+            # Cancel a pending hand-off if the user taps the current source.
+            if self._pending_switch:
+                self._player_for(self._pending_switch).pause()
+                self._audio_for(self._pending_switch).setVolume(0.0)
+                self._pending_switch=None
             self._update_active_indicator()
             return
         if source=='adjusted' and (self.preview is None or not self._preview_loaded):
@@ -447,6 +452,9 @@ class AlbumABDialog(QDialog):
         target=self._player_for(source)
         pos=previous.position()
         playing=previous.playbackState()==QMediaPlayer.PlayingState
+        if self._pending_switch and self._pending_switch!=source:
+            self._player_for(self._pending_switch).pause()
+            self._audio_for(self._pending_switch).setVolume(0.0)
         self._pending_switch=None
         # Both files have already been loaded. Seek inactive target to the
         # active transport position; never call setSource() during a switch.
