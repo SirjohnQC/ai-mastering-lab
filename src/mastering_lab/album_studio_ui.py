@@ -696,6 +696,8 @@ class StemPreviewDialog(QDialog):
         self.worker=None
         self.wet=None
         self.mode='dry'
+        self._ready_to_switch=False
+        self._pending=None
         self.setWindowTitle('FRANKENSTEM · Dry / Wet · '+self.source.name)
         self.setMinimumWidth(540)
         layout=QVBoxLayout(self)
@@ -731,6 +733,11 @@ class StemPreviewDialog(QDialog):
             lambda ms:self._position('dry',ms))
         self.player_b.positionChanged.connect(
             lambda ms:self._position('wet',ms))
+        self.player_b.mediaStatusChanged.connect(self._wet_status)
+        self.player_a.playbackStateChanged.connect(
+            lambda state:self._handoff('dry',state))
+        self.player_b.playbackStateChanged.connect(
+            lambda state:self._handoff('wet',state))
         self.player_a.setSource(QUrl.fromLocalFile(str(self.source)))
         self._decorate()
         self._prepare()
@@ -747,6 +754,25 @@ class StemPreviewDialog(QDialog):
         self.wet_button.setStyleSheet(style if not is_dry else '')
         self.active.setText('♫ EN ÉCOUTE : '+('A · DRY' if is_dry else 'B · WET'))
 
+    def _wet_status(self,status):
+        self._ready_to_switch=(self.wet is not None and status in
+            (QMediaPlayer.LoadedMedia,QMediaPlayer.BufferedMedia))
+        self.wet_button.setEnabled(self._ready_to_switch)
+
+    def _handoff(self,mode,state):
+        if self._pending!=mode or state!=QMediaPlayer.PlayingState:
+            return
+        old='wet' if mode=='dry' else 'dry'
+        incoming_audio=self.audio_a if mode=='dry' else self.audio_b
+        outgoing_audio=self.audio_b if mode=='dry' else self.audio_a
+        outgoing_player=self.player_b if mode=='dry' else self.player_a
+        outgoing_audio.setVolume(0.0)
+        incoming_audio.setVolume(1.0)
+        outgoing_player.pause()
+        self.mode=mode
+        self._pending=None
+        self._decorate()
+
     def _toggle(self):
         player=self.player_a if self.mode=='dry' else self.player_b
         if player.playbackState()==QMediaPlayer.PlayingState:
@@ -755,24 +781,31 @@ class StemPreviewDialog(QDialog):
             player.play()
 
     def _switch(self,mode):
-        if mode==self.mode or (mode=='wet' and self.wet is None):
+        if mode==self.mode or (mode=='wet' and not self._ready_to_switch):
+            if self._pending and mode==self.mode:
+                target=self.player_b if self._pending=='wet' else self.player_a
+                target.pause()
+                self._pending=None
             return
         outgoing=self.player_a if self.mode=='dry' else self.player_b
         incoming=self.player_a if mode=='dry' else self.player_b
         at=outgoing.position()
         playing=outgoing.playbackState()==QMediaPlayer.PlayingState
         incoming.setPosition(at)
-        outgoing.pause()
-        if mode=='dry':
-            self.audio_b.setVolume(0.0)
-            self.audio_a.setVolume(1.0)
+        if playing:
+            # Keep current audio audible until the incoming decoder plays.
+            self._pending=mode
+            if mode=='dry': self.audio_a.setVolume(0.0)
+            else: self.audio_b.setVolume(0.0)
+            incoming.play()
+            if incoming.playbackState()==QMediaPlayer.PlayingState:
+                self._handoff(mode,incoming.playbackState())
         else:
-            self.audio_a.setVolume(0.0)
-            self.audio_b.setVolume(1.0)
-        self.mode=mode
-        if playing: incoming.play()
-        self._position(mode,at)
-        self._decorate()
+            self.audio_a.setVolume(1.0 if mode=='dry' else 0.0)
+            self.audio_b.setVolume(1.0 if mode=='wet' else 0.0)
+            self.mode=mode
+            self._position(mode,at)
+            self._decorate()
 
     def _prepare(self):
         self.info.setText('Préparation de l’aperçu Wet en arrière-plan… '
@@ -787,8 +820,10 @@ class StemPreviewDialog(QDialog):
 
     def _ready(self,result):
         self.wet=result
+        self._ready_to_switch=False
+        self.wet_button.setEnabled(False)
         self.player_b.setSource(QUrl.fromLocalFile(result['file']))
-        self.wet_button.setEnabled(True)
+        self._wet_status(self.player_b.mediaStatus())
         self.info.setText(
             f'Wet prêt : {self.style.title()}, Drive {self.drive:.1f}, '
             f'Mix {self.mix:.0%}. Différence RMS '
@@ -807,6 +842,7 @@ class StemPreviewDialog(QDialog):
                                     'La préparation Wet est en cours.')
             event.ignore()
             return
+        self._pending=None
         self.player_a.stop()
         self.player_b.stop()
         super().closeEvent(event)
