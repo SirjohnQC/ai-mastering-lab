@@ -38,17 +38,17 @@ def tonal_proposal(track):
         raise ValueError('Invalid broad-band measurements.')
     if any(abs(v) > MAX_TRUSTED_DELTA_DB for v in bands):
         raise ValueError('Extreme spectral difference: may reflect arrangement; no safe EQ guess.')
-    # The upper band is especially vulnerable to sparsely populated material,
-    # aliasing and mic noise; exclude it from automated matching for now.
-    candidates = [(abs(delta), i, delta) for i, delta in enumerate(bands[:4])
-                  if abs(delta) >= SPECTRAL_THRESHOLD_DB]
+    # The high band is less trustworthy; a weaker capped adjustment may still
+    # be auditioned, but never infer a large treble boost from sparse samples.
+    candidates = [(abs(delta), i, delta) for i, delta in enumerate(bands)
+                  if abs(delta) >= (5.0 if i == 4 else SPECTRAL_THRESHOLD_DB)]
     candidates.sort(reverse=True)
     chosen = []
     for _, index, delta in candidates[:MAX_FILTERS]:
         # Gently oppose the measured *relative* energy difference, never
         # translate the band difference literally into a plugin gain.
-        gain = round(max(-MAX_FILTER_GAIN_DB,
-                         min(MAX_FILTER_GAIN_DB, -0.18 * delta)), 2)
+        maximum = 0.6 if index == 4 else MAX_FILTER_GAIN_DB
+        gain = round(max(-maximum, min(maximum, -0.18 * delta)), 2)
         if abs(gain) >= 0.25:
             chosen.append({'band_index':index, 'frequency_hz':BAND_CENTERS[index],
                            'gain_db':gain, 'width_octaves':1.0,
