@@ -759,7 +759,7 @@ class AlbumStudioPage(QWidget):
         heading.setStyleSheet('font-size:23px;font-weight:750;background:transparent')
         top.addWidget(heading)
         top.addStretch()
-        self.label = QLabel('v0.26.5 · FRANKENSTEM Stem Surgery')
+        self.label = QLabel('v0.26.6 · Stem Inspector + FX Advisor')
         self.label.setStyleSheet('color:#afb4c9;background:transparent')
         top.addWidget(self.label)
         layout.addLayout(top)
@@ -996,7 +996,10 @@ class AlbumStudioPage(QWidget):
         if track is None or track['kind']!='stems':
             return
         try:
-            dialog=StemSaturationDialog(track['path'],track.get('stem_saturation'),self)
+            from .stem_fx_ui import StemFxSurgeryDialog
+            cache=self.export_dir/'stem_fx_previews'
+            dialog=StemFxSurgeryDialog(
+                track['path'],track.get('stem_saturation'),cache,self)
         except (OSError,ValueError) as exc:
             QMessageBox.warning(self,'Stem Surgery',str(exc))
             return
