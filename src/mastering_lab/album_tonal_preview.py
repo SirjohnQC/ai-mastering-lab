@@ -26,18 +26,66 @@ TP_CEILING_DBTP = -1.0
 PREVIEW_POLICY = 'tonal-match-matched-loudness-v1'
 
 
+
+class PreviewNotNeeded(ValueError):
+    """Reliable comparison says the original is already sufficiently close."""
+
+
+class PreviewUncertain(ValueError):
+    """Spectral inputs are not trustworthy enough for reference matching."""
+
+
+# Deliberately different, explicitly user-selected aesthetics, *not* reference
+# corrections. Same bounded processing, loudness and true-peak checks as Match.
+CREATIVE_STYLES = {
+    'warm': (
+        {'band_index':1, 'frequency_hz':350,'gain_db':0.65,'width_octaves':1.25},
+        {'band_index':3, 'frequency_hz':4400,'gain_db':-0.45,'width_octaves':1.0},
+    ),
+    'presence': (
+        {'band_index':2, 'frequency_hz':1200,'gain_db':-0.35,'width_octaves':1.0},
+        {'band_index':3, 'frequency_hz':4400,'gain_db':0.75,'width_octaves':1.0},
+    ),
+    'air': (
+        {'band_index':3, 'frequency_hz':4400,'gain_db':0.35,'width_octaves':1.0},
+        {'band_index':4, 'frequency_hz':11000,'gain_db':0.55,'width_octaves':1.0},
+    ),
+}
+
+
+def preview_decision(track):
+    """A domain decision, not a Python exception in the user's UI."""
+    try:
+        candidate=tonal_proposal(track)
+    except PreviewNotNeeded:
+        return {'status':'already_close','proposal':None}
+    except PreviewUncertain:
+        return {'status':'uncertain','proposal':None}
+    return {'status':'available','proposal':candidate}
+
+
+def creative_proposal(track, style='warm'):
+    if not isinstance(track,dict) or track.get('status')!='measured':
+        raise PreviewUncertain('A QC-pass measured master is required.')
+    if style not in CREATIVE_STYLES:
+        raise ValueError('Unknown creative sound style.')
+    return {'kind':'creative_eq_preview', 'style':style,
+            'filters':[dict(f) for f in CREATIVE_STYLES[style]],
+            'disclaimer':'Optional creative coloration; not a claim of better reference matching.'}
+
+
 def tonal_proposal(track):
     """Select <=2 cautious broad-band EQ moves. Do not infer exact correction."""
     if not isinstance(track, dict) or track.get('status') != 'measured':
-        raise ValueError('Tonal matching needs an analyzed QC-pass master.')
+        raise PreviewUncertain('Tonal matching needs an analyzed QC-pass master.')
     bands = track.get('relative_band_delta_db')
     if not isinstance(bands, list) or len(bands) != len(BAND_CENTERS):
-        raise ValueError('Missing broad-band comparison against album reference.')
+        raise PreviewUncertain('Missing broad-band comparison against album reference.')
     if any(not isinstance(v, (float, int)) or
            isinstance(v, bool) or not math.isfinite(v) for v in bands):
-        raise ValueError('Invalid broad-band measurements.')
+        raise PreviewUncertain('Invalid broad-band measurements.')
     if any(abs(v) > MAX_TRUSTED_DELTA_DB for v in bands):
-        raise ValueError('Extreme spectral difference: may reflect arrangement; no safe EQ guess.')
+        raise PreviewUncertain('Extreme spectral difference: may reflect arrangement; no safe EQ guess.')
     # The high band is less trustworthy; a weaker capped adjustment may still
     # be auditioned, but never infer a large treble boost from sparse samples.
     candidates = [(abs(delta), i, delta) for i, delta in enumerate(bands)
@@ -54,7 +102,7 @@ def tonal_proposal(track):
                            'gain_db':gain, 'width_octaves':1.0,
                            'relative_difference_db':round(float(delta),2)})
     if not chosen:
-        raise ValueError('No reliable, meaningful tonal difference to preview.')
+        raise PreviewNotNeeded('No reliable, meaningful tonal difference to preview.')
     return {'kind':'tonal_eq_preview', 'filters':chosen,
             'disclaimer':'Approximate broad-band EQ experiment only. Reference may differ artistically.'}
 
@@ -81,7 +129,7 @@ def _metrics(fn, path):
 
 
 def render_tonal_preview(master_path, report_track, cache_dir, *,
-                         ffmpeg_path=None, measure_fn=None):
+                         ffmpeg_path=None, measure_fn=None, mode='match', creative_style='warm'):
     """Produce B separately, match its loudness to A, enforce TP, cache safely."""
     source=Path(master_path).resolve(strict=True)
     if not source.is_file() or source.suffix.lower() != '.wav':
@@ -89,7 +137,12 @@ def render_tonal_preview(master_path, report_track, cache_dir, *,
     meta=_probe_wav(source)
     if meta['channels']!=2 or meta['frames']<=0:
         raise ValueError('Original must be a nonempty stereo WAV.')
-    suggestion=tonal_proposal(report_track)
+    if mode == 'match':
+        suggestion=tonal_proposal(report_track)
+    elif mode == 'creative':
+        suggestion=creative_proposal(report_track, creative_style)
+    else:
+        raise ValueError('Invalid A/B preview mode.')
     ffmpeg=ffmpeg_path or shutil.which('ffmpeg')
     if not ffmpeg:
         raise RuntimeError('Local FFmpeg is required.')
@@ -102,7 +155,8 @@ def render_tonal_preview(master_path, report_track, cache_dir, *,
     stat=source.stat()
     fingerprint=json.dumps({
         'source':str(source),'size':stat.st_size,'mtime_ns':stat.st_mtime_ns,
-        'policy':PREVIEW_POLICY,'filters':suggestion['filters'],
+        'policy':PREVIEW_POLICY,'mode':mode,'creative_style':creative_style if mode=='creative' else None,
+        'filters':suggestion['filters'],
         'original_lufs':round(original_lufs,3),'original_tp':round(original_tp,3)
     },sort_keys=True)
     digest=hashlib.sha256(fingerprint.encode('utf-8')).hexdigest()[:20]
@@ -145,7 +199,9 @@ def render_tonal_preview(master_path, report_track, cache_dir, *,
         temp.replace(output)
         record={'status':'preview_only','file':str(output),
                 'source_master':str(source),'fingerprint':fingerprint,
-                'kind':'tonal_eq_preview','eq_filters':suggestion['filters'],
+                'kind':suggestion['kind'],'mode':mode,
+                'creative_style':creative_style if mode=='creative' else None,
+                'eq_filters':suggestion['filters'],
                 'gain_db':round(compensation,4),
                 'original_lufs':round(original_lufs,3),
                 'measured_lufs':round(lufs,3),
