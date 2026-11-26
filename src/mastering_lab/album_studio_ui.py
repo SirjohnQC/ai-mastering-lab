@@ -11,6 +11,8 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel
 
 from .album_project import (empty_project, load_project, save_project,
                             add_entries, discover_album, album_summary)
+from .album_match_advisor import advise_album, localized_card
+from .ui_language import get_language
 
 
 class AlbumBatchWorker(QThread):
@@ -109,7 +111,7 @@ class AlbumStudioPage(QWidget):
         heading.setStyleSheet('font-size:23px;font-weight:750;background:transparent')
         top.addWidget(heading)
         top.addStretch()
-        self.label = QLabel('v0.25.0 · Album Intelligence')
+        self.label = QLabel('v0.25.1 · Album Match Advisor')
         self.label.setStyleSheet('color:#afb4c9;background:transparent')
         top.addWidget(self.label)
         layout.addLayout(top)
@@ -147,6 +149,11 @@ class AlbumStudioPage(QWidget):
         self.consistency_status.setWordWrap(True)
         self.consistency_status.setStyleSheet('color:#bac5de;background:transparent;font-size:12px;')
         layout.addWidget(self.consistency_status)
+        self.advice_legend = QLabel(
+            '✦ Conseils d’écoute uniquement — aucun EQ, gain ou master modifié.')
+        self.advice_legend.setWordWrap(True)
+        self.advice_legend.setStyleSheet('color:#c5b2df;background:transparent;font-size:11px;')
+        layout.addWidget(self.advice_legend)
         self.consistency_detail = QLabel('')
         self.consistency_detail.setWordWrap(True)
         self.consistency_detail.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -255,12 +262,29 @@ class AlbumStudioPage(QWidget):
         self.consistency_status.setText('Analyse impossible : ' + message)
 
     def _album_analyzed(self, report):
+        # A deterministic review-only advisor. Never touch the mastering
+        # pipeline or silently write suggested plugin settings.
+        try:
+            advice = advise_album(report)
+        except (ValueError, TypeError, KeyError) as exc:
+            self._album_analysis_failed('Album Match Advisor : ' + str(exc))
+            return
         self._intelligence_report = report
+        self._album_advice = advice
         self.export_dir.mkdir(parents=True,exist_ok=True)
         target = self.export_dir / 'album_consistency.json'
         tmp = target.with_suffix('.json.tmp')
         tmp.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
         tmp.replace(target)
+        advice_path = self.export_dir / 'album_match_advice.json'
+        advice_tmp = advice_path.with_suffix('.json.tmp')
+        advice_tmp.write_text(json.dumps(advice,ensure_ascii=False,indent=2),encoding='utf-8')
+        advice_tmp.replace(advice_path)
+        lang = get_language()
+        self.advice_legend.setText(
+            '✦ Listening suggestions only — no EQ, gain or master modified.'
+            if lang == 'en' else
+            '✦ Conseils d’écoute uniquement — aucun EQ, gain ou master modifié.')
         items = report['tracks']
         measured = sum(r['status'] in ('reference','measured') for r in items)
         flagged = sum(bool(r.get('flags')) for r in items)
@@ -280,7 +304,9 @@ class AlbumStudioPage(QWidget):
                 info = (f'Δ LUFS {row["lufs_delta"]:+.2f} · '
                         f'écart spectral maximal {dominant:.1f} dB'
                         + (' · ⚠ Écoute conseillée' if flags else ' · Mesures proches'))
-            lines.append(f'{row["index"]+1:02d}. {row["title"]}: {info}')
+            suggestion = localized_card(advice['tracks'][row['index']], lang)
+            lines.append(f'{row["index"]+1:02d}. {row["title"]}: {info}'
+                         + ('\n    ↳ ' + suggestion if suggestion else ''))
         self.consistency_detail.setText('\n'.join(lines))
 
 
