@@ -61,12 +61,14 @@ public:
             error="Stem sample rates differ; resample before live audition"; return false;
         }
         if (rate<=0) rate=format->sampleRate;
-        if (shortestLength>0 && std::llabs(format->lengthInSamples-shortestLength) >
-                               (int64)(rate*0.05)) {
+        if (shortestLength>0 && jmax(length,format->lengthInSamples) -
+                                 jmin(shortestLength,format->lengthInSamples) >
+                                 (int64)(rate*0.05)) {
             error="Stems differ in length by >50ms; align before live playback";
             return false;
         }
-        shortestLength=format->lengthInSamples;
+        shortestLength=shortestLength==0 ? format->lengthInSamples :
+                       jmin(shortestLength,format->lengthInSamples);
         length=jmax(length,format->lengthInSamples);
         auto stem=std::make_unique<Stem>();
         stem->name=file.getFileName();
@@ -138,6 +140,15 @@ public:
                 const float pan=stem->channels==1 ? .7071068f : 1.0f;
                 dstL[i]+=l*pan;
                 dstR[i]+=r*pan;
+            }
+        }
+        // Playback monitor only. Conserve headroom before summing independent
+        // stems; mastered loudness/true peak are verified on offline export.
+        const float monitorGain=0.8f / std::sqrt((float)jmax(1,(int)stems.size()));
+        for (int i=0;i<size;++i) {
+            for (int ch=0;ch<2;++ch) {
+                auto* out=info.buffer->getWritePointer(ch,info.startSample);
+                out[i]=jlimit(-0.98f,0.98f,out[i]*monitorGain);
             }
         }
         playhead.fetch_add(size,std::memory_order_relaxed);
