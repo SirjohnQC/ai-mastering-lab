@@ -8,7 +8,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel,
     QPushButton, QLineEdit, QComboBox, QFileDialog, QMessageBox, QProgressBar, QScrollArea,
-    QListWidget, QListWidgetItem, QAbstractItemView, QApplication, QDialog)
+    QListWidget, QListWidgetItem, QAbstractItemView, QApplication, QDialog, QSlider)
 
 from .album_project import (empty_project, load_project, save_project,
                             add_entries, discover_album, album_summary, reorder_tracks, move_track_onto)
@@ -233,20 +233,29 @@ class AlbumABRenderWorker(QThread):
     failed = Signal(str)
 
     def __init__(self, master, analysis_row, output_dir, parent=None, *,
-                 mode='match', creative_style='warm'):
+                 mode='match', creative_style='warm', drive=1.0, wet_mix=.2):
         super().__init__(parent)
         self.master=master
         self.analysis_row=dict(analysis_row)
         self.output_dir=output_dir
         self.mode=mode
         self.creative_style=creative_style
+        self.drive=drive
+        self.wet_mix=wet_mix
 
     def run(self):
         try:
-            from .album_tonal_preview import render_tonal_preview
-            self.ready.emit(render_tonal_preview(
-                self.master,self.analysis_row,self.output_dir,
-                mode=self.mode,creative_style=self.creative_style))
+            if self.mode=='saturation':
+                from .album_saturation_preview import render_saturation_preview
+                result=render_saturation_preview(
+                    self.master,self.analysis_row,self.output_dir,
+                    style=self.creative_style,drive=self.drive,mix=self.wet_mix)
+            else:
+                from .album_tonal_preview import render_tonal_preview
+                result=render_tonal_preview(
+                    self.master,self.analysis_row,self.output_dir,
+                    mode=self.mode,creative_style=self.creative_style)
+            self.ready.emit(result)
         except Exception as exc:
             self.failed.emit(f'{type(exc).__name__}: {exc}')
 
@@ -278,8 +287,36 @@ class AlbumABDialog(QDialog):
         self.mode_picker.addItem('Creative · Warm',('creative','warm'))
         self.mode_picker.addItem('Creative · Presence',('creative','presence'))
         self.mode_picker.addItem('Creative · Air',('creative','air'))
+        self.mode_picker.addItem('Saturation · Tape',('saturation','tape'))
+        self.mode_picker.addItem('Saturation · Tube',('saturation','tube'))
+        self.mode_picker.addItem('Saturation · Soft Clip',('saturation','softclip'))
         self.mode_picker.currentIndexChanged.connect(self._mode_changed)
         v.addWidget(self.mode_picker)
+        self.saturation_options=QWidget(self)
+        sat_col=QVBoxLayout(self.saturation_options)
+        sat_col.setContentsMargins(0,0,0,0)
+        sat_col.setSpacing(5)
+        drive_header=QHBoxLayout()
+        drive_header.addWidget(QLabel('Drive'))
+        self.drive_value=QLabel('1.0')
+        drive_header.addWidget(self.drive_value)
+        sat_col.addLayout(drive_header)
+        self.drive_slider=QSlider(Qt.Horizontal)
+        self.drive_slider.setRange(2,25)
+        self.drive_slider.setValue(10)
+        self.drive_slider.valueChanged.connect(self._saturation_controls_changed)
+        sat_col.addWidget(self.drive_slider)
+        wet_header=QHBoxLayout()
+        wet_header.addWidget(QLabel('Wet Mix'))
+        self.wet_value=QLabel('20%')
+        wet_header.addWidget(self.wet_value)
+        sat_col.addLayout(wet_header)
+        self.wet_slider=QSlider(Qt.Horizontal)
+        self.wet_slider.setRange(5,40)
+        self.wet_slider.setValue(20)
+        self.wet_slider.valueChanged.connect(self._saturation_controls_changed)
+        sat_col.addWidget(self.wet_slider)
+        v.addWidget(self.saturation_options)
         self.status=QLabel('')
         self.status.setWordWrap(True)
         v.addWidget(self.status)
@@ -336,14 +373,22 @@ class AlbumABDialog(QDialog):
         self._update_active_indicator()
         self._mode_changed()
 
+    def _saturation_controls_changed(self, *_):
+        self.drive_value.setText(f'{self.drive_slider.value()/10:.1f}')
+        self.wet_value.setText(f'{self.wet_slider.value()}%')
+        if self.worker is None and self.mode_picker.currentData()[0]=='saturation':
+            self._mode_changed()
+
     def _mode_changed(self, *_):
         if self.worker is not None:
             return
         mode,style=self.mode_picker.currentData()
         self.preview=None
         self.adjusted_button.setText(
-            'B · Creative '+style.title() if mode=='creative'
-            else 'B · Tonal Match')
+            'B · Saturation '+style.title() if mode=='saturation'
+            else ('B · Creative '+style.title() if mode=='creative'
+                  else 'B · Tonal Match'))
+        self.saturation_options.setVisible(mode=='saturation')
         self.adjusted_button.setEnabled(False)
         self.approve_button.setEnabled(False)
         if self.source=='adjusted':
@@ -353,7 +398,14 @@ class AlbumABDialog(QDialog):
         self.preview_player.setSource(QUrl())
         self._preview_loaded=False
         self._update_active_indicator()
-        if mode=='creative':
+        if mode=='saturation':
+            self.status.setText(
+                'Saturation digitale expérimentale : crée des harmoniques et peut '
+                'accentuer les artefacts IA. B doit respecter le loudness de A '
+                'et le True Peak ≤ −1 dBTP.')
+            self.render_button.setText('✦ Préparer B · Saturation '+style.title())
+            self.render_button.setEnabled(True)
+        elif mode=='creative':
             description={'warm':'plus chaleureux','presence':'plus de présence',
                          'air':'plus d’air et de clarté'}[style]
             self.status.setText(
@@ -398,7 +450,9 @@ class AlbumABDialog(QDialog):
         label=('A · ORIGINAL' if is_a else 'B · ' +
                ('CREATIVE '+str((self.preview or {}).get('creative_style','')).upper()
                 if (self.preview or {}).get('mode')=='creative'
-                else 'TONAL MATCH'))
+                else ('SATURATION '+str((self.preview or {}).get('saturation_style','')).upper()
+                      if (self.preview or {}).get('mode')=='saturation'
+                      else 'TONAL MATCH')))
         self.now_playing.setText('♫ EN ÉCOUTE : '+label)
         self.now_playing.setStyleSheet(
             'color:#edeaff;background:#332d60;border:1px solid #8e81ea;'
@@ -488,10 +542,14 @@ class AlbumABDialog(QDialog):
             return
         self.render_button.setEnabled(False)
         self.mode_picker.setEnabled(False)
+        self.drive_slider.setEnabled(False)
+        self.wet_slider.setEnabled(False)
         self.status.setText('Préparation de B, égalisation LUFS et vérification True Peak…')
         worker=AlbumABRenderWorker(
             self.master,self.analysis,self.cache,self,
-            mode=mode,creative_style=style or 'warm')
+            mode=mode,creative_style=style or 'warm',
+            drive=self.drive_slider.value()/10,
+            wet_mix=self.wet_slider.value()/100)
         self.worker=worker
         worker.ready.connect(self._ready)
         worker.failed.connect(self._failed)
@@ -508,12 +566,16 @@ class AlbumABDialog(QDialog):
         self.adjusted_button.setEnabled(False)  # enabled on LoadedMedia
         self.approve_button.setEnabled(True)
         filters=result.get('eq_filters',[])
-        description=', '.join(
-            f'{p["frequency_hz"]} Hz {p["gain_db"]:+.2f} dB'
-            for p in filters)
-        kind=('Creative '+str(result.get('creative_style','')).title()
-              if result.get('mode')=='creative' else 'Reference Match')
-        intensity=result.get('eq_strength',1.0)
+        if result.get('mode')=='saturation':
+            description=f'Drive {result["drive"]:.2f} · Wet {result["wet_mix"]:.0%}'
+            kind='Saturation '+result['saturation_style'].title()
+        else:
+            description=', '.join(
+                f'{p["frequency_hz"]} Hz {p["gain_db"]:+.2f} dB'
+                for p in filters)
+            kind=('Creative '+str(result.get('creative_style','')).title()
+                  if result.get('mode')=='creative' else 'Reference Match')
+        intensity=result.get('eq_strength',result.get('intensity',1.0))
         intensity_note=(f' · intensité adaptée {intensity:.0%}' if intensity<1.0
                         else ' · intensité normale')
         self.status.setText(
@@ -534,10 +596,12 @@ class AlbumABDialog(QDialog):
     def _worker_finished(self):
         self.worker=None
         self.mode_picker.setEnabled(True)
+        self.drive_slider.setEnabled(True)
+        self.wet_slider.setEnabled(True)
         if not self.preview:
             mode,_=self.mode_picker.currentData()
             self.render_button.setEnabled(
-                mode=='creative' or self.match_decision['status']=='available')
+                mode in ('creative','saturation') or self.match_decision['status']=='available')
         else:
             self.render_button.setEnabled(True)
 
@@ -611,7 +675,7 @@ class AlbumStudioPage(QWidget):
         heading.setStyleSheet('font-size:23px;font-weight:750;background:transparent')
         top.addWidget(heading)
         top.addStretch()
-        self.label = QLabel('v0.26.1 · Smart A/B Creative')
+        self.label = QLabel('v0.26.4 · Creative Saturation')
         self.label.setStyleSheet('color:#afb4c9;background:transparent')
         top.addWidget(self.label)
         layout.addLayout(top)
