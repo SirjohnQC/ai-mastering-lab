@@ -310,8 +310,8 @@ class AlbumABDialog(QDialog):
         candidate=self.master if source=='original' else Path(self.preview['file'])
         pos=self.player.position()
         playing=self.player.playbackState()==QMediaPlayer.PlayingState
-        self.player.setSource(QUrl.fromLocalFile(str(candidate)))
-        # Restore timeline after media metadata is loaded asynchronously.
+        # Connect before setSource: Qt can report LoadedMedia immediately
+        # when a cached WAV is reopened. Restoration is one-shot.
         def restore(status):
             if status in (QMediaPlayer.LoadedMedia,QMediaPlayer.BufferedMedia):
                 try:
@@ -322,6 +322,9 @@ class AlbumABDialog(QDialog):
                 if playing:
                     self.player.play()
         self.player.mediaStatusChanged.connect(restore)
+        self.player.setSource(QUrl.fromLocalFile(str(candidate)))
+        if self.player.mediaStatus() in (QMediaPlayer.LoadedMedia,QMediaPlayer.BufferedMedia):
+            restore(self.player.mediaStatus())
         self.source=source
 
     def _prepare(self):
