@@ -55,6 +55,13 @@ def can_reuse_master(row: dict) -> bool:
         ref_path = result.get('album_reference_library_path')
         if ref_path and result.get('album_reference_signature') != reference_signature(ref_path):
             return False
+        external_path = result.get('album_external_reference_path')
+        if external_path:
+            try:
+                if result.get('album_external_reference_signature') != source_signature(external_path, 'stereo'):
+                    return False
+            except (OSError, ValueError):
+                return False
         variants = result.get('album_candidates') or {}
         if set(variants) != {'balanced', 'vocal-focus', 'punchy'} or not all(Path(p).is_file() for p in variants.values()):
             return False
@@ -65,7 +72,7 @@ def can_reuse_master(row: dict) -> bool:
 
 
 def master_stem_folder(folder, output_dir, *, stop=None, progress=None,
-                       render_mix_fn=None, master_fn=None, ai_decider=None, selection_fn=None, reference_path=None) -> dict:
+                       render_mix_fn=None, master_fn=None, ai_decider=None, selection_fn=None, reference_path=None, external_reference_wav=None) -> dict:
     """Render dry A/B/C, select with bounded Hermes and master chosen candidate.
 
     No originals / saved stem configuration are modified. Cancellation between
@@ -112,6 +119,7 @@ def master_stem_folder(folder, output_dir, *, stop=None, progress=None,
         progress(f'{folder.name} : évaluation DSP des 3 mixages + Hermes')
     selected, selection_report = ((selection_fn(rendered) if selection_fn else
         choose_candidate(rendered, reference_path=reference_path,
+                         external_reference_wav=external_reference_wav,
                          preferences_path=(Path(reference_path).parent / 'mix_preferences.json') if reference_path else None)))
     if selected not in VARIANTS:
         raise ValueError('Sélection hors des 3 variantes autorisées')
@@ -129,6 +137,8 @@ def master_stem_folder(folder, output_dir, *, stop=None, progress=None,
         'album_candidate_reports': reports,
         'album_selected_candidate': selected,
         'album_pipeline': PIPELINE_ID,
+        'album_external_reference_path': str(external_reference_wav) if external_reference_wav else None,
+        'album_external_reference_signature': source_signature(external_reference_wav, 'stereo') if external_reference_wav else None,
         'album_reference_library_path': str(reference_path) if reference_path else None,
         'album_reference_signature': reference_signature(reference_path) if reference_path else 'none',
         'album_preference_history_path': str(Path(reference_path).parent / 'mix_preferences.json') if reference_path else None,
