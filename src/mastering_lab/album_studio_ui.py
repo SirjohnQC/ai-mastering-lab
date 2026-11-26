@@ -5,15 +5,16 @@ import json
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal, QTimer
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel,
     QPushButton, QLineEdit, QComboBox, QFileDialog, QMessageBox, QProgressBar, QScrollArea,
-    QListWidget, QListWidgetItem, QAbstractItemView, QApplication)
+    QListWidget, QListWidgetItem, QAbstractItemView, QApplication, QDialog)
 
 from .album_project import (empty_project, load_project, save_project,
                             add_entries, discover_album, album_summary, reorder_tracks, move_track_onto)
 from .album_match_advisor import advise_album, localized_card
 from .ui_language import get_language
+from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
 
 class AlbumBatchWorker(QThread):
@@ -227,6 +228,152 @@ class AlbumDragHandle(QLabel):
         super().mouseReleaseEvent(event)
 
 
+class AlbumABRenderWorker(QThread):
+    ready = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, master, analysis_row, output_dir, parent=None):
+        super().__init__(parent)
+        self.master=master
+        self.analysis_row=dict(analysis_row)
+        self.output_dir=output_dir
+
+    def run(self):
+        try:
+            from .album_ab_preview import render_preview
+            self.ready.emit(render_preview(self.master,self.analysis_row,self.output_dir))
+        except Exception as exc:
+            self.failed.emit(f'{type(exc).__name__}: {exc}')
+
+
+class AlbumABDialog(QDialog):
+    """One synchronized transport for Original / Level preview, no master replacement."""
+
+    def __init__(self, master, analysis, cache, parent=None):
+        super().__init__(parent)
+        self.master=Path(master).resolve()
+        self.analysis=dict(analysis)
+        self.cache=Path(cache)
+        self.preview=None
+        self.worker=None
+        self.source='original'
+        self.setWindowTitle('Album A/B · Original / Aperçu niveau')
+        self.setMinimumWidth(560)
+        v=QVBoxLayout(self)
+        self.status=QLabel('Prépare une alternative de niveau limitée à ±1 dB. Aucun EQ automatique.')
+        self.status.setWordWrap(True)
+        v.addWidget(self.status)
+        self.render_button=QPushButton('✦ Préparer l’aperçu ajusté')
+        self.render_button.clicked.connect(self._prepare)
+        v.addWidget(self.render_button)
+        controls=QHBoxLayout()
+        self.original_button=QPushButton('A · Original')
+        self.adjusted_button=QPushButton('B · Ajusté')
+        self.adjusted_button.setEnabled(False)
+        self.original_button.clicked.connect(lambda:self._switch('original'))
+        self.adjusted_button.clicked.connect(lambda:self._switch('adjusted'))
+        controls.addWidget(self.original_button)
+        controls.addWidget(self.adjusted_button)
+        v.addLayout(controls)
+        playback=QHBoxLayout()
+        self.play_button=QPushButton('▶ Écouter / Pause')
+        self.play_button.clicked.connect(self._toggle_play)
+        playback.addWidget(self.play_button)
+        self.position=QLabel('0:00')
+        playback.addWidget(self.position)
+        v.addLayout(playback)
+        self.approve_button=QPushButton('♥ Approuver B pour une future exportation')
+        self.approve_button.setEnabled(False)
+        self.approve_button.clicked.connect(self._approve)
+        v.addWidget(self.approve_button)
+        self.note=QLabel('Cette approbation ne remplace pas le master et ne certifie pas la distribution.')
+        self.note.setWordWrap(True)
+        v.addWidget(self.note)
+        self.audio=QAudioOutput(self)
+        self.player=QMediaPlayer(self)
+        self.player.setAudioOutput(self.audio)
+        self.player.positionChanged.connect(self._position_changed)
+        self.player.setSource(QUrl.fromLocalFile(str(self.master)))
+
+    def _position_changed(self,ms):
+        self.position.setText(f'{ms//60000}:{(ms//1000)%60:02d}')
+
+    def _toggle_play(self):
+        if self.player.playbackState()==QMediaPlayer.PlayingState:
+            self.player.pause()
+        else:
+            self.player.play()
+
+    def _switch(self,source):
+        if source=='adjusted' and self.preview is None:
+            return
+        candidate=self.master if source=='original' else Path(self.preview['file'])
+        pos=self.player.position()
+        playing=self.player.playbackState()==QMediaPlayer.PlayingState
+        self.player.setSource(QUrl.fromLocalFile(str(candidate)))
+        # Restore timeline after media metadata is loaded asynchronously.
+        def restore(status):
+            if status in (QMediaPlayer.LoadedMedia,QMediaPlayer.BufferedMedia):
+                try:
+                    self.player.mediaStatusChanged.disconnect(restore)
+                except (RuntimeError,TypeError):
+                    pass
+                self.player.setPosition(pos)
+                if playing:
+                    self.player.play()
+        self.player.mediaStatusChanged.connect(restore)
+        self.source=source
+
+    def _prepare(self):
+        if self.worker is not None:
+            return
+        self.render_button.setEnabled(False)
+        self.status.setText('Création de l’aperçu et vérification True Peak en cours…')
+        worker=AlbumABRenderWorker(self.master,self.analysis,self.cache,self)
+        self.worker=worker
+        worker.ready.connect(self._ready)
+        worker.failed.connect(self._failed)
+        worker.finished.connect(self._worker_finished)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _ready(self,result):
+        self.preview=result
+        self.adjusted_button.setEnabled(True)
+        self.approve_button.setEnabled(True)
+        self.status.setText(
+            f'A/B prêt : gain {result["gain_db"]:+.2f} dB · '
+            f'True Peak {result["verified_true_peak_dbtp"]:.2f} dBTP. '
+            'Aucun EQ ni master original modifié.')
+
+    def _failed(self,message):
+        self.status.setText('Aucun aperçu sûr disponible : '+message)
+
+    def _worker_finished(self):
+        self.worker=None
+        self.render_button.setEnabled(True)
+
+    def _approve(self):
+        if not self.preview:
+            return
+        import json
+        manifest=Path(self.preview['file']).with_suffix('.json')
+        data=dict(self.preview,approved=True)
+        tmp=manifest.with_suffix('.approved.partial')
+        tmp.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')
+        tmp.replace(manifest)
+        self.approve_button.setEnabled(False)
+        self.note.setText('♥ Aperçu B approuvé pour une future exportation. Le master original reste intact.')
+
+    def closeEvent(self,event):
+        if self.worker is not None:
+            QMessageBox.information(self,'A/B','Termine la préparation avant de fermer.')
+            event.ignore()
+            return
+        self.player.stop()
+        super().closeEvent(event)
+
+
 class AlbumStudioPage(QWidget):
     """Single guided album workspace that never overwrites individual song sources."""
     backRequested = Signal()
@@ -259,7 +406,7 @@ class AlbumStudioPage(QWidget):
         heading.setStyleSheet('font-size:23px;font-weight:750;background:transparent')
         top.addWidget(heading)
         top.addStretch()
-        self.label = QLabel('v0.25.5 · Drop on Song Card')
+        self.label = QLabel('v0.25.6 · Album A/B Preview')
         self.label.setStyleSheet('color:#afb4c9;background:transparent')
         top.addWidget(self.label)
         layout.addLayout(top)
@@ -333,6 +480,11 @@ class AlbumStudioPage(QWidget):
         self.consistency_detail.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.consistency_detail.setStyleSheet('color:#aebbd1;background:transparent;font-size:11px;')
         layout.addWidget(self.consistency_detail)
+        self.ab_button=QPushButton('♫ Écouter Original / Ajusté (A/B)')
+        self.ab_button.setToolTip('Choisis une chanson de la liste après analyse pour préparer un aperçu non destructif.')
+        self.ab_button.clicked.connect(self._open_ab)
+        self.ab_button.setEnabled(False)
+        layout.addWidget(self.ab_button)
         self.order_hint = QLabel('⠿ Glisse une chanson directement SUR une autre carte pour changer son ordre.')
         self.order_hint.setStyleSheet('color:#afbbcf;background:transparent;font-size:11px;')
         layout.addWidget(self.order_hint)
@@ -348,6 +500,7 @@ class AlbumStudioPage(QWidget):
             'QListWidget#albumTrackOrder::item:selected {background:transparent;}')
         self._rebuilding_track_list = False
         self.track_list.orderRequested.connect(self._on_song_card_drop)
+        self.track_list.currentItemChanged.connect(self._update_ab_button)
         self.track_list.model().rowsMoved.connect(self._schedule_track_reorder)
         layout.addWidget(self.track_list, 1)
         self.progress_text = QLabel('Prêt à organiser ton album.')
@@ -382,6 +535,34 @@ class AlbumStudioPage(QWidget):
                         and self._intelligence_worker.isRunning())
                     or (self._recognition_worker is not None
                         and self._recognition_worker.isRunning()))
+
+    def _update_ab_button(self,*_):
+        selected=self.track_list.currentItem()
+        source=selected.data(Qt.UserRole) if selected is not None else None
+        report=self._intelligence_report
+        eligible=False
+        if not self._busy() and source and report:
+            for index,row in enumerate(self.project['tracks']):
+                if row['path']==source and index<len(report.get('tracks',[])):
+                    eligible=report['tracks'][index].get('status')=='measured'
+                    break
+        self.ab_button.setEnabled(eligible)
+
+    def _open_ab(self):
+        selected=self.track_list.currentItem()
+        if self._busy() or selected is None or self._intelligence_report is None:
+            return
+        source=selected.data(Qt.UserRole)
+        for index,row in enumerate(self.project['tracks']):
+            if row['path'] != source:
+                continue
+            analysis=self._intelligence_report['tracks'][index]
+            result=row.get('result') or {}
+            if analysis.get('status')!='measured' or not Path(result.get('file','')).is_file():
+                return
+            dlg=AlbumABDialog(result['file'],analysis,self.export_dir/'ab_previews',self)
+            dlg.exec()
+            return
 
     def _recognize_existing(self):
         if self._busy():
@@ -554,6 +735,7 @@ class AlbumStudioPage(QWidget):
             self._album_analysis_failed('Album Match Advisor : ' + str(exc))
             return
         self._intelligence_report = report
+        self._update_ab_button()
         self._album_advice = advice
         self.export_dir.mkdir(parents=True,exist_ok=True)
         target = self.export_dir / 'album_consistency.json'
@@ -783,6 +965,7 @@ class AlbumStudioPage(QWidget):
             t['kind']=='stereo' and t.get('status')!='qc_pass'
             for t in self.project['tracks']))
         self._refresh_reference_picker()
+        self._update_ab_button()
 
     def _run(self):
         if self._busy(): return
