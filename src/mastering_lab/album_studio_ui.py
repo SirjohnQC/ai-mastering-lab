@@ -8,7 +8,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel,
     QPushButton, QLineEdit, QComboBox, QFileDialog, QMessageBox, QProgressBar, QScrollArea,
-    QListWidget, QListWidgetItem, QAbstractItemView)
+    QListWidget, QListWidgetItem, QAbstractItemView, QApplication)
 
 from .album_project import (empty_project, load_project, save_project,
                             add_entries, discover_album, album_summary, reorder_tracks)
@@ -108,6 +108,52 @@ class AlbumIntelligenceWorker(QThread):
                 external_reference_wav=self.external_reference_wav))
         except Exception as exc:
             self.failed.emit(f'{type(exc).__name__}: {exc}')
+
+
+class AlbumOrderList(QListWidget):
+    """Allow a dedicated card handle to initiate the standard internal move."""
+
+    def begin_handle_drag(self, item):
+        if self.dragDropMode() != QAbstractItemView.InternalMove:
+            return
+        if item is None or self.row(item) < 0:
+            return
+        self.setCurrentItem(item)
+        self.startDrag(Qt.MoveAction)
+
+
+class AlbumDragHandle(QLabel):
+    """Explicit handle: embedded labels/buttons otherwise consume Qt mouse events."""
+
+    def __init__(self, track_list, parent=None):
+        super().__init__('⠿', parent)
+        self.track_list = track_list
+        self.item = None
+        self._press = None
+        self.setToolTip('Glisser ici pour réordonner la chanson')
+        self.setStyleSheet('font-size:20px;color:#a8a4da;')
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._press = event.position().toPoint()
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if (self._press is not None and
+                event.buttons() & Qt.LeftButton and
+                (event.position().toPoint()-self._press).manhattanLength()
+                >= QApplication.startDragDistance()):
+            self._press = None
+            self.track_list.begin_handle_drag(self.item)
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._press = None
+        super().mouseReleaseEvent(event)
 
 
 class AlbumStudioPage(QWidget):
@@ -219,7 +265,7 @@ class AlbumStudioPage(QWidget):
         self.order_hint = QLabel('↕ Glisse les chansons pour changer leur ordre (sauvegarde automatique).')
         self.order_hint.setStyleSheet('color:#afbbcf;background:transparent;font-size:11px;')
         layout.addWidget(self.order_hint)
-        self.track_list = QListWidget(self)
+        self.track_list = AlbumOrderList(self)
         self.track_list.setObjectName('albumTrackOrder')
         self.track_list.setDragDropMode(QAbstractItemView.InternalMove)
         self.track_list.setDefaultDropAction(Qt.MoveAction)
@@ -616,9 +662,7 @@ class AlbumStudioPage(QWidget):
                 view.setEnabled(not self._busy())
                 view.clicked.connect(lambda _, n=i: self._open_candidates(n))
                 line.addWidget(view)
-            drag_handle = QLabel('⠿')
-            drag_handle.setToolTip('Glisser la ligne pour réordonner')
-            drag_handle.setStyleSheet('font-size:20px;color:#a8a4da;')
+            drag_handle = AlbumDragHandle(self.track_list, card)
             line.addWidget(drag_handle)
             for text, cb in (('×', lambda _, n=i: self._remove(n)),):
                 button = QPushButton(text)
@@ -630,6 +674,7 @@ class AlbumStudioPage(QWidget):
             item.setData(Qt.UserRole, track['path'])
             item.setSizeHint(card.sizeHint())
             self.track_list.addItem(item)
+            drag_handle.item = item
             self.track_list.setItemWidget(item, card)
         self._rebuilding_track_list = False
         self.track_list.setDragEnabled(not self._busy())
