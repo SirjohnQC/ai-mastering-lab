@@ -645,6 +645,209 @@ class AlbumSelectableCard(QFrame):
             super().mousePressEvent(event)
 
 
+class StemInspectWorker(QThread):
+    ready=Signal(object)
+    failed=Signal(str)
+
+    def __init__(self,config,parent=None):
+        super().__init__(parent)
+        self.config=config
+
+    def run(self):
+        try:
+            from .stem_fx_advisor import inspect_and_advise
+            self.ready.emit(inspect_and_advise(self.config))
+        except Exception as exc:
+            self.failed.emit(f'{type(exc).__name__}: {exc}')
+
+
+class StemPreviewWorker(QThread):
+    ready=Signal(object)
+    failed=Signal(str)
+
+    def __init__(self,source,cache,style,drive,mix,parent=None):
+        super().__init__(parent)
+        self.source=source
+        self.cache=cache
+        self.style=style
+        self.drive=drive
+        self.mix=mix
+
+    def run(self):
+        try:
+            from .stem_fx_preview import create_stem_preview
+            self.ready.emit(create_stem_preview(
+                self.source,self.cache,style=self.style,
+                drive=self.drive,mix=self.mix))
+        except Exception as exc:
+            self.failed.emit(f'{type(exc).__name__}: {exc}')
+
+
+class StemPreviewDialog(QDialog):
+    """One compact Dry/Wet player. WAVs are prepared before B can be selected."""
+
+    def __init__(self,source,cache,style,drive,mix,parent=None):
+        super().__init__(parent)
+        self.source=Path(source).resolve()
+        self.cache=Path(cache)
+        self.style=style
+        self.drive=drive
+        self.mix=mix
+        self.worker=None
+        self.wet=None
+        self.mode='dry'
+        self._ready_to_switch=False
+        self._pending=None
+        self.setWindowTitle('FRANKENSTEM · Dry / Wet · '+self.source.name)
+        self.setMinimumWidth(540)
+        layout=QVBoxLayout(self)
+        self.info=QLabel('Dry = original. Wet = saturation proposée, nivelée au RMS. '
+                         'Aucune modification du stem original.')
+        self.info.setWordWrap(True)
+        layout.addWidget(self.info)
+        switch=QHBoxLayout()
+        self.dry_button=QPushButton('A · DRY')
+        self.wet_button=QPushButton('B · WET')
+        self.wet_button.setEnabled(False)
+        self.dry_button.clicked.connect(lambda:self._switch('dry'))
+        self.wet_button.clicked.connect(lambda:self._switch('wet'))
+        switch.addWidget(self.dry_button)
+        switch.addWidget(self.wet_button)
+        layout.addLayout(switch)
+        self.active=QLabel('♫ EN ÉCOUTE : A · DRY')
+        layout.addWidget(self.active)
+        self.transport=QPushButton('▶ Play / Pause')
+        self.transport.clicked.connect(self._toggle)
+        layout.addWidget(self.transport)
+        self.time=QLabel('00:00')
+        layout.addWidget(self.time)
+        self.audio_a=QAudioOutput(self)
+        self.audio_b=QAudioOutput(self)
+        self.player_a=QMediaPlayer(self)
+        self.player_b=QMediaPlayer(self)
+        self.player_a.setAudioOutput(self.audio_a)
+        self.player_b.setAudioOutput(self.audio_b)
+        self.audio_a.setVolume(1.0)
+        self.audio_b.setVolume(0.0)
+        self.player_a.positionChanged.connect(
+            lambda ms:self._position('dry',ms))
+        self.player_b.positionChanged.connect(
+            lambda ms:self._position('wet',ms))
+        self.player_b.mediaStatusChanged.connect(self._wet_status)
+        self.player_a.playbackStateChanged.connect(
+            lambda state:self._handoff('dry',state))
+        self.player_b.playbackStateChanged.connect(
+            lambda state:self._handoff('wet',state))
+        self.player_a.setSource(QUrl.fromLocalFile(str(self.source)))
+        self._decorate()
+        self._prepare()
+
+    def _position(self,mode,ms):
+        if self.mode==mode:
+            self.time.setText(f'{ms//60000:02d}:{(ms//1000)%60:02d}')
+
+    def _decorate(self):
+        is_dry=self.mode=='dry'
+        style=('background:#6256be;color:white;border:2px solid #b5a5ff;'
+               'border-radius:6px;font-weight:bold;padding:8px;')
+        self.dry_button.setStyleSheet(style if is_dry else '')
+        self.wet_button.setStyleSheet(style if not is_dry else '')
+        self.active.setText('♫ EN ÉCOUTE : '+('A · DRY' if is_dry else 'B · WET'))
+
+    def _wet_status(self,status):
+        self._ready_to_switch=(self.wet is not None and status in
+            (QMediaPlayer.LoadedMedia,QMediaPlayer.BufferedMedia))
+        self.wet_button.setEnabled(self._ready_to_switch)
+
+    def _handoff(self,mode,state):
+        if self._pending!=mode or state!=QMediaPlayer.PlayingState:
+            return
+        old='wet' if mode=='dry' else 'dry'
+        incoming_audio=self.audio_a if mode=='dry' else self.audio_b
+        outgoing_audio=self.audio_b if mode=='dry' else self.audio_a
+        outgoing_player=self.player_b if mode=='dry' else self.player_a
+        outgoing_audio.setVolume(0.0)
+        incoming_audio.setVolume(1.0)
+        outgoing_player.pause()
+        self.mode=mode
+        self._pending=None
+        self._decorate()
+
+    def _toggle(self):
+        player=self.player_a if self.mode=='dry' else self.player_b
+        if player.playbackState()==QMediaPlayer.PlayingState:
+            player.pause()
+        else:
+            player.play()
+
+    def _switch(self,mode):
+        if mode==self.mode or (mode=='wet' and not self._ready_to_switch):
+            if self._pending and mode==self.mode:
+                target=self.player_b if self._pending=='wet' else self.player_a
+                target.pause()
+                self._pending=None
+            return
+        outgoing=self.player_a if self.mode=='dry' else self.player_b
+        incoming=self.player_a if mode=='dry' else self.player_b
+        at=outgoing.position()
+        playing=outgoing.playbackState()==QMediaPlayer.PlayingState
+        incoming.setPosition(at)
+        if playing:
+            # Keep current audio audible until the incoming decoder plays.
+            self._pending=mode
+            if mode=='dry': self.audio_a.setVolume(0.0)
+            else: self.audio_b.setVolume(0.0)
+            incoming.play()
+            if incoming.playbackState()==QMediaPlayer.PlayingState:
+                self._handoff(mode,incoming.playbackState())
+        else:
+            self.audio_a.setVolume(1.0 if mode=='dry' else 0.0)
+            self.audio_b.setVolume(1.0 if mode=='wet' else 0.0)
+            self.mode=mode
+            self._position(mode,at)
+            self._decorate()
+
+    def _prepare(self):
+        self.info.setText('Préparation de l’aperçu Wet en arrière-plan… '
+                          'Tu peux déjà écouter Dry.')
+        self.worker=StemPreviewWorker(
+            self.source,self.cache,self.style,self.drive,self.mix,self)
+        self.worker.ready.connect(self._ready)
+        self.worker.failed.connect(self._failed)
+        self.worker.finished.connect(self._finished)
+        self.worker.finished.connect(self.worker.deleteLater)
+        self.worker.start()
+
+    def _ready(self,result):
+        self.wet=result
+        self._ready_to_switch=False
+        self.wet_button.setEnabled(False)
+        self.player_b.setSource(QUrl.fromLocalFile(result['file']))
+        self._wet_status(self.player_b.mediaStatus())
+        self.info.setText(
+            f'Wet prêt : {self.style.title()}, Drive {self.drive:.1f}, '
+            f'Mix {self.mix:.0%}. Différence RMS '
+            f'{result["rms_difference_db"]:+.2f} dB. '
+            'Écoute seulement : pas de QC mastering.')
+
+    def _failed(self,message):
+        self.info.setText('⚠ Aucun Wet préparé : '+message+' · Dry reste intact.')
+
+    def _finished(self):
+        self.worker=None
+
+    def closeEvent(self,event):
+        if self.worker is not None:
+            QMessageBox.information(self,'Stem Preview',
+                                    'La préparation Wet est en cours.')
+            event.ignore()
+            return
+        self._pending=None
+        self.player_a.stop()
+        self.player_b.stop()
+        super().closeEvent(event)
+
+
 class StemSaturationDialog(QDialog):
     """User-approved saturation of specific stems, never default-on."""
 
@@ -655,6 +858,9 @@ class StemSaturationDialog(QDialog):
         self.config=config_template(Path(folder))
         self.saved=validated_selections(self.config,saved)
         self.rows=[]
+        self.analysis_worker=None
+        self.advice_by_path={}
+        self.measured_advice={}
         self.setWindowTitle('FRANKENSTEM · Stem Surgery')
         self.setMinimumWidth(720)
         root=QVBoxLayout(self)
@@ -662,9 +868,19 @@ class StemSaturationDialog(QDialog):
                      'Suggestions heuristiques, pas détection d’artefacts IA.')
         intro.setWordWrap(True)
         root.addWidget(intro)
+        self.analyze_button=QPushButton('⌕ Inspecter les stems · FX Advisor')
+        self.analyze_button.clicked.connect(self._analyze)
+        root.addWidget(self.analyze_button)
+        self.summary=QLabel('Analyse non lancée · aucune suggestion audio mesurée.')
+        self.summary.setWordWrap(True)
+        root.addWidget(self.summary)
         suggested=QPushButton('✦ Pré-sélectionner voix et basse (à confirmer)')
         suggested.clicked.connect(self._select_safe_suggestions)
         root.addWidget(suggested)
+        self.use_inspection=QPushButton('✓ Pré-sélectionner les essais recommandés par mesures')
+        self.use_inspection.setEnabled(False)
+        self.use_inspection.clicked.connect(self._select_measured_candidates)
+        root.addWidget(self.use_inspection)
         scroll=QScrollArea()
         scroll.setWidgetResizable(True)
         inner=QWidget()
@@ -696,7 +912,13 @@ class StemSaturationDialog(QDialog):
             note=QLabel(advice['group']+' · '+advice['why'])
             note.setWordWrap(True)
             content.addWidget(note)
+            preview=QPushButton('♫ Écouter Dry / Wet')
+            preview.clicked.connect(
+                lambda _,source=file,st=style,d=drive,w=wet:
+                self._preview(source,st,d,w))
+            content.addWidget(preview)
             self.rows.append((file,enabled,style,drive,wet))
+            self.advice_by_path[file]=note
         content.addStretch()
         scroll.setWidget(inner)
         root.addWidget(scroll,1)
@@ -704,6 +926,87 @@ class StemSaturationDialog(QDialog):
         buttons.accepted.connect(self._validate_accept)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
+
+    def _analyze(self):
+        if self.analysis_worker is not None:
+            return
+        self.analyze_button.setEnabled(False)
+        self.summary.setText('Analyse réelle des stems en cours…')
+        worker=StemInspectWorker(self.config,self)
+        self.analysis_worker=worker
+        worker.ready.connect(self._analysis_ready)
+        worker.failed.connect(self._analysis_failed)
+        worker.finished.connect(self._analysis_finished)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _analysis_ready(self,rows):
+        candidates=0
+        self.measured_advice={row['file']:row['advisor'] for row in rows}
+        for row in rows:
+            advice=row['advisor']
+            if advice['status']=='candidate':
+                candidates+=1
+            label=self.advice_by_path.get(row['file'])
+            if label is not None:
+                metrics=advice['evidence']
+                marker='✓ Essai possible' if advice['status']=='candidate' else '⚠ Bypass conseillé'
+                metric_text=(f' · Crest {metrics.get("median_crest_db")} dB'
+                             f' · HF {100*metrics.get("mean_high_frequency_ratio",0):.1f}%'
+                             if metrics else '')
+                label.setText(marker+metric_text+' · '+advice['reason'])
+        self.use_inspection.setEnabled(True)
+        self.summary.setText(
+            f'Inspection terminée : {len(rows)} stems analysés; '
+            f'{candidates} essai(s) envisageable(s). '
+            'Aucun traitement activé automatiquement.')
+
+    def _analysis_failed(self,message):
+        self.summary.setText('⚠ Inspection impossible : '+message)
+
+    def _analysis_finished(self):
+        self.analysis_worker=None
+        self.analyze_button.setEnabled(True)
+
+    def _preview(self,source,style,drive,wet):
+        if self.analysis_worker is not None:
+            QMessageBox.information(self,'Stem Inspector',
+                                    'Termine l’inspection avant l’écoute A/B.')
+            return
+        from pathlib import Path
+        root=Path(self.parent().root)
+        cache=root/'sound'/'output'/'album_studio'/'stem_fx_previews'
+        dlg=StemPreviewDialog(
+            source,cache,style.currentData(),drive.value(),wet.value()/100,self)
+        dlg.exec()
+
+    def _can_exit(self):
+        if self.analysis_worker is not None:
+            QMessageBox.information(self,'Stem Inspector',
+                                    'Analyse des stems en cours.')
+            return False
+        return True
+
+    def closeEvent(self,event):
+        if not self._can_exit():
+            event.ignore()
+            return
+        super().closeEvent(event)
+
+    def reject(self):
+        if self._can_exit():
+            super().reject()
+
+    def accept(self):
+        if self._can_exit():
+            super().accept()
+
+    def _select_measured_candidates(self):
+        # Preselect only measured audition candidates, never silence / clipped
+        # stems or drums; user must still click OK to approve.
+        for file,enabled,style,drive,wet in self.rows:
+            status=self.measured_advice.get(file,{})
+            enabled.setChecked(status.get('recommendation')=='audition_only')
 
     def _select_safe_suggestions(self):
         from .auto_mix_candidates import _group
@@ -759,7 +1062,7 @@ class AlbumStudioPage(QWidget):
         heading.setStyleSheet('font-size:23px;font-weight:750;background:transparent')
         top.addWidget(heading)
         top.addStretch()
-        self.label = QLabel('v0.26.5 · FRANKENSTEM Stem Surgery')
+        self.label = QLabel('v0.26.6 · Stem Inspector + FX Advisor')
         self.label.setStyleSheet('color:#afb4c9;background:transparent')
         top.addWidget(self.label)
         layout.addLayout(top)
