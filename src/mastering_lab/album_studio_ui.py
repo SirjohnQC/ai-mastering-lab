@@ -252,7 +252,7 @@ class AlbumABRenderWorker(QThread):
 
 
 class AlbumABDialog(QDialog):
-    """One shared playback transport for original / loudness-matched tonal EQ."""
+    """Two preloaded WAV players with one visible synchronized A/B transport."""
 
     def __init__(self, master, analysis, cache, parent=None):
         super().__init__(parent)
@@ -262,6 +262,9 @@ class AlbumABDialog(QDialog):
         self.preview=None
         self.worker=None
         self.source='original'
+        self._pending_switch=None
+        self._switch_generation=0
+        self._preview_loaded=False
         self.setWindowTitle('Album A/B · Original / EQ de référence')
         self.setMinimumWidth(560)
         v=QVBoxLayout(self)
@@ -292,6 +295,10 @@ class AlbumABDialog(QDialog):
         controls.addWidget(self.original_button)
         controls.addWidget(self.adjusted_button)
         v.addLayout(controls)
+        self.now_playing=QLabel('▶ EN ÉCOUTE : A · ORIGINAL')
+        self.now_playing.setAlignment(Qt.AlignCenter)
+        self.now_playing.setMinimumHeight(32)
+        v.addWidget(self.now_playing)
         playback=QHBoxLayout()
         self.play_button=QPushButton('▶ Écouter / Pause')
         self.play_button.clicked.connect(self._toggle_play)
@@ -306,11 +313,27 @@ class AlbumABDialog(QDialog):
         self.note=QLabel('Cette approbation ne remplace pas le master et ne certifie pas la distribution.')
         self.note.setWordWrap(True)
         v.addWidget(self.note)
+        # Keep A and B decoded in separate Qt players. Replacing setSource()
+        # mid-playback used to stop audio while FFmpeg reloaded the WAV.
         self.audio=QAudioOutput(self)
-        self.player=QMediaPlayer(self)
+        self.player=QMediaPlayer(self)  # A, retained for backwards compatibility
         self.player.setAudioOutput(self.audio)
-        self.player.positionChanged.connect(self._position_changed)
+        self.preview_audio=QAudioOutput(self)
+        self.preview_player=QMediaPlayer(self)  # B; its source loaded only once ready
+        self.preview_player.setAudioOutput(self.preview_audio)
+        self.audio.setVolume(1.0)
+        self.preview_audio.setVolume(0.0)
+        self.player.positionChanged.connect(
+            lambda ms: self._position_changed('original',ms))
+        self.preview_player.positionChanged.connect(
+            lambda ms: self._position_changed('adjusted',ms))
+        self.player.playbackStateChanged.connect(
+            lambda state: self._playback_changed('original',state))
+        self.preview_player.playbackStateChanged.connect(
+            lambda state: self._playback_changed('adjusted',state))
+        self.preview_player.mediaStatusChanged.connect(self._preview_status_changed)
         self.player.setSource(QUrl.fromLocalFile(str(self.master)))
+        self._update_active_indicator()
         self._mode_changed()
 
     def _mode_changed(self, *_):
@@ -322,6 +345,11 @@ class AlbumABDialog(QDialog):
         self.approve_button.setEnabled(False)
         if self.source=='adjusted':
             self._switch('original')
+        self._pending_switch=None
+        self.preview_player.stop()
+        self.preview_player.setSource(QUrl())
+        self._preview_loaded=False
+        self._update_active_indicator()
         if mode=='creative':
             description={'warm':'plus chaleureux','presence':'plus de présence',
                          'air':'plus d’air et de clarté'}[style]
@@ -348,37 +376,97 @@ class AlbumABDialog(QDialog):
                     'Le loudness A/B et le True Peak seront contrôlés.')
             self.render_button.setEnabled(state=='available')
 
-    def _position_changed(self,ms):
-        self.position.setText(f'{ms//60000}:{(ms//1000)%60:02d}')
+    def _player_for(self, source):
+        return self.player if source=='original' else self.preview_player
+
+    def _audio_for(self, source):
+        return self.audio if source=='original' else self.preview_audio
+
+    def _update_active_indicator(self):
+        is_a=self.source=='original'
+        self.original_button.setStyleSheet(
+            'QPushButton {background:#6256be; color:white; border:2px solid #c5b8ff;'
+            'border-radius:7px; font-weight:700; padding:9px;}'
+            if is_a else '')
+        self.adjusted_button.setStyleSheet(
+            'QPushButton {background:#6256be; color:white; border:2px solid #c5b8ff;'
+            'border-radius:7px; font-weight:700; padding:9px;}'
+            if not is_a else '')
+        label=('A · ORIGINAL' if is_a else 'B · ' +
+               ('CREATIVE '+str((self.preview or {}).get('creative_style','')).upper()
+                if (self.preview or {}).get('mode')=='creative'
+                else 'TONAL MATCH'))
+        self.now_playing.setText('♫ EN ÉCOUTE : '+label)
+        self.now_playing.setStyleSheet(
+            'color:#edeaff;background:#332d60;border:1px solid #8e81ea;'
+            'border-radius:7px;font-weight:700;padding:6px;')
+        self.original_button.setAccessibleName('A Original' +
+            (' · version active' if is_a else ''))
+        self.adjusted_button.setAccessibleName('B Ajusté' +
+            (' · version active' if not is_a else ''))
+
+    def _position_changed(self, source, ms):
+        if self.source==source:
+            self.position.setText(f'{ms//60000}:{(ms//1000)%60:02d}')
+
+    def _playback_changed(self, source, state):
+        if state != QMediaPlayer.PlayingState or self._pending_switch != source:
+            return
+        # The target is playing while muted; now hand off audio and pause
+        # the previous decoder. Source files are NEVER reloaded here.
+        previous='adjusted' if source=='original' else 'original'
+        self._audio_for(previous).setVolume(0.0)
+        self._audio_for(source).setVolume(1.0)
+        self._player_for(previous).pause()
+        self.source=source
+        self._pending_switch=None
+        self._update_active_indicator()
+        self._position_changed(source,self._player_for(source).position())
+
+    def _preview_status_changed(self, status):
+        self._preview_loaded=status in (
+            QMediaPlayer.LoadedMedia,QMediaPlayer.BufferedMedia)
+        # Don't offer switching to B until its WAV decoder is prepared.
+        self.adjusted_button.setEnabled(
+            self.preview is not None and self._preview_loaded)
 
     def _toggle_play(self):
-        if self.player.playbackState()==QMediaPlayer.PlayingState:
-            self.player.pause()
+        active=self._player_for(self.source)
+        if active.playbackState()==QMediaPlayer.PlayingState:
+            active.pause()
         else:
-            self.player.play()
+            active.play()
 
-    def _switch(self,source):
-        if source=='adjusted' and self.preview is None:
+    def _switch(self, source):
+        if source==self.source:
+            self._update_active_indicator()
             return
-        candidate=self.master if source=='original' else Path(self.preview['file'])
-        pos=self.player.position()
-        playing=self.player.playbackState()==QMediaPlayer.PlayingState
-        # Connect before setSource: Qt can report LoadedMedia immediately
-        # when a cached WAV is reopened. Restoration is one-shot.
-        def restore(status):
-            if status in (QMediaPlayer.LoadedMedia,QMediaPlayer.BufferedMedia):
-                try:
-                    self.player.mediaStatusChanged.disconnect(restore)
-                except (RuntimeError,TypeError):
-                    pass
-                self.player.setPosition(pos)
-                if playing:
-                    self.player.play()
-        self.player.mediaStatusChanged.connect(restore)
-        self.player.setSource(QUrl.fromLocalFile(str(candidate)))
-        if self.player.mediaStatus() in (QMediaPlayer.LoadedMedia,QMediaPlayer.BufferedMedia):
-            restore(self.player.mediaStatus())
-        self.source=source
+        if source=='adjusted' and (self.preview is None or not self._preview_loaded):
+            return
+        previous=self._player_for(self.source)
+        target=self._player_for(source)
+        pos=previous.position()
+        playing=previous.playbackState()==QMediaPlayer.PlayingState
+        self._pending_switch=None
+        # Both files have already been loaded. Seek inactive target to the
+        # active transport position; never call setSource() during a switch.
+        if source=='original':
+            self.player.setPosition(pos)
+        else:
+            self.preview_player.setPosition(pos)
+        if playing:
+            self._pending_switch=source
+            # Keep current player audible until target reports PlayingState.
+            self._audio_for(source).setVolume(0.0)
+            target.play()
+            if target.playbackState()==QMediaPlayer.PlayingState:
+                self._playback_changed(source,target.playbackState())
+        else:
+            self._audio_for(self.source).setVolume(0.0)
+            self._audio_for(source).setVolume(1.0)
+            self.source=source
+            self._update_active_indicator()
+            self._position_changed(source,pos)
 
     def _prepare(self):
         if self.worker is not None:
@@ -402,7 +490,11 @@ class AlbumABDialog(QDialog):
 
     def _ready(self,result):
         self.preview=result
-        self.adjusted_button.setEnabled(True)
+        self.preview_player.stop()
+        self.preview_audio.setVolume(0.0)
+        self._preview_loaded=False
+        self.preview_player.setSource(QUrl.fromLocalFile(str(result['file'])))
+        self.adjusted_button.setEnabled(False)  # enabled on LoadedMedia
         self.approve_button.setEnabled(True)
         filters=result.get('eq_filters',[])
         description=', '.join(
@@ -447,7 +539,9 @@ class AlbumABDialog(QDialog):
             QMessageBox.information(self,'A/B','Termine la préparation avant de fermer.')
             event.ignore()
             return
+        self._pending_switch=None
         self.player.stop()
+        self.preview_player.stop()
         super().closeEvent(event)
 
 
