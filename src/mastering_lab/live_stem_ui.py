@@ -149,6 +149,7 @@ class LiveStemDialog(QDialog):
         self.state.setText('JUCE démarré · préparation des stems et du périphérique audio…')
 
     def _process_error(self,_error):
+        self._startup_phase='error'
         self.watchdog.stop()
         self.state.setText('⚠ Impossible de lancer JUCE : '+self.process.errorString()+
                            ' · Reconstruis frankenstem-live si nécessaire.')
@@ -156,9 +157,11 @@ class LiveStemDialog(QDialog):
     def _startup_timeout(self):
         if self.ready:
             return
+        phase=self._startup_phase
+        self._startup_phase='timeout'
         self.state.setText(
             '⚠ Le moteur JUCE ne répond pas (12 secondes). '
-            'Dernière étape : '+self._startup_phase+
+            'Dernière étape : '+phase+
             '. Vérifie le périphérique audio, les stems et la compilation native.')
         self.fx_note.setText(
             'Live FX indisponible. Le mastering et les fichiers sources sont intacts. '
@@ -177,6 +180,11 @@ class LiveStemDialog(QDialog):
             self.state.setText(
                 '⚠ Le moteur audio JUCE est fermé. '
                 'Rouvre Live FX pour repartir une session propre.')
+        elif self.isVisible() and self._startup_phase not in ('timeout','error'):
+            self.state.setText(
+                '⚠ JUCE s’est fermé avant d’être prêt (code '
+                +str(self.process.exitCode())+'). '
+                +self._last_native_error[-180:])
 
     def _stderr(self):
         # Only show errors, never flood the UI from the audio callback.
