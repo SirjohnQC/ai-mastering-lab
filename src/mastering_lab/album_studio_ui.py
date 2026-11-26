@@ -40,7 +40,7 @@ class AlbumBatchWorker(QThread):
         for idx, row in self.entries:
             if self.stop_event.is_set():
                 break
-            if can_reuse_master(row):
+            if can_reuse_master(row, external_reference_wav=self.external_reference_wav):
                 self.item.emit(idx, 'qc_pass', row.get('result'), '')
             elif (row['kind'] == 'stems' and not Path(row['path']).is_dir()) or (row['kind'] == 'stereo' and not Path(row['path']).is_file()):
                 self.item.emit(idx, 'error', None, 'Source audio introuvable')
@@ -316,8 +316,12 @@ class AlbumStudioPage(QWidget):
             self.external_reference_label.setText('WAV de référence : '+ref.name)
             self.external_ref_clear.setEnabled(not self._busy())
         else:
-            self.external_reference_label.setText('WAV de référence indépendant : aucun')
-            self.external_ref_clear.setEnabled(False)
+            self.external_reference_label.setText(
+                '⚠ Référence WAV absente ou invalide'
+                if self.project.get('external_reference_wav') else
+                'WAV de référence indépendant : aucun')
+            self.external_ref_clear.setEnabled(
+                bool(self.project.get('external_reference_wav')) and not self._busy())
         self.external_ref_select.setEnabled(not self._busy())
         self.compare_album_btn.setEnabled(
             not self._busy() and (ref is not None or self.reference_picker.currentData() is not None))
@@ -388,6 +392,11 @@ class AlbumStudioPage(QWidget):
             return
         choice = self.reference_picker.currentData()
         external = self._external_reference()
+        if self.project.get('external_reference_wav') and external is None:
+            QMessageBox.warning(self, 'Référence WAV',
+                'Le WAV de référence enregistré est introuvable ou invalide. '
+                'Choisis un autre WAV ou retire cette référence.')
+            return
         if external is None and choice is None:
             QMessageBox.information(self,'Album Intelligence',
                                     'Choisis un WAV indépendant ou un master QC validé.')
@@ -605,6 +614,11 @@ class AlbumStudioPage(QWidget):
             return
         from .reference_learning import library_path
         external = self._external_reference()
+        if self.project.get('external_reference_wav') and external is None:
+            QMessageBox.warning(self, 'Référence WAV',
+                'Le WAV de référence est manquant ou invalide. '
+                'Change la référence avant Auto Produce Album.')
+            return
         self._worker = AlbumBatchWorker(
             rows, self.export_dir, self,
             reference_path=library_path(self.root),
