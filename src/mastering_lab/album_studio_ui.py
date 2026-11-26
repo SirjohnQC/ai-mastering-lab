@@ -662,6 +662,9 @@ class StemSaturationDialog(QDialog):
                      'Suggestions heuristiques, pas détection d’artefacts IA.')
         intro.setWordWrap(True)
         root.addWidget(intro)
+        suggested=QPushButton('✦ Pré-sélectionner voix et basse (à confirmer)')
+        suggested.clicked.connect(self._select_safe_suggestions)
+        root.addWidget(suggested)
         scroll=QScrollArea()
         scroll.setWidgetResizable(True)
         inner=QWidget()
@@ -701,6 +704,13 @@ class StemSaturationDialog(QDialog):
         buttons.accepted.connect(self._validate_accept)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
+
+    def _select_safe_suggestions(self):
+        from .auto_mix_candidates import _group
+        # Category-only starting points, never unreviewed automatic processing.
+        for file,enabled,style,drive,wet in self.rows:
+            if _group({'file':file}) in ('vocals','bass'):
+                enabled.setChecked(True)
 
     def _validate_accept(self):
         from .stem_saturation import validated_selections
