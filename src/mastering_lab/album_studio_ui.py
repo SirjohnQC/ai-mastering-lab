@@ -118,7 +118,23 @@ class AlbumOrderList(QListWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._drag_source_path = None
+        self._hovered_item = None
         self.setDropIndicatorShown(False)
+
+    def _highlight_target(self, item):
+        if self._hovered_item is item:
+            return
+        normal = ('QFrame {background:#1b1d29;border:1px solid #3a3d50;'
+                  'border-radius:9px} QLabel {background:transparent;border:none}')
+        active = ('QFrame {background:#292943;border:2px solid #a99bff;'
+                  'border-radius:9px} QLabel {background:transparent;border:none}')
+        old = self.itemWidget(self._hovered_item) if self._hovered_item is not None else None
+        if old is not None:
+            old.setStyleSheet(normal)
+        self._hovered_item = item
+        card = self.itemWidget(item) if item is not None else None
+        if card is not None:
+            card.setStyleSheet(active)
 
     def dragEnterEvent(self, event):
         if (event.source() is self and self._drag_source_path
@@ -133,13 +149,16 @@ class AlbumOrderList(QListWidget):
             return
         target = self.itemAt(event.position().toPoint())
         if target is None:
+            self._highlight_target(None)
             self.clearSelection()
             event.ignore()
             return
         self.setCurrentItem(target)
+        self._highlight_target(target)
         event.acceptProposedAction()
 
     def dragLeaveEvent(self, event):
+        self._highlight_target(None)
         self.clearSelection()
         super().dragLeaveEvent(event)
 
@@ -150,6 +169,7 @@ class AlbumOrderList(QListWidget):
         target = self.itemAt(event.position().toPoint())
         source_path = self._drag_source_path
         target_path = target.data(Qt.UserRole) if target is not None else None
+        self._highlight_target(None)
         self.clearSelection()
         if not source_path or not target_path or source_path == target_path:
             event.ignore()
@@ -169,6 +189,7 @@ class AlbumOrderList(QListWidget):
             self.startDrag(Qt.MoveAction)
         finally:
             self._drag_source_path = None
+            self._highlight_target(None)
             self.clearSelection()
 
 
@@ -674,6 +695,7 @@ class AlbumStudioPage(QWidget):
 
     def _refresh(self):
         self._rebuilding_track_list = True
+        self.track_list._hovered_item = None
         self.track_list.clear()
         tracks = self.project['tracks']
         for i, track in enumerate(tracks):
