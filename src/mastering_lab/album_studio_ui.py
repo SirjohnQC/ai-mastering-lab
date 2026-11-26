@@ -680,7 +680,8 @@ class AlbumStudioPage(QWidget):
         ready=(ref is not None) if active_external else album_ok
         self.compare_album_btn.setEnabled(ready and not self._busy()
                                            and any(t.get('status')=='qc_pass' for t in self.project['tracks']))
-        self.consistency_status.setText(self._reference_message())
+        if self._intelligence_report is None:
+            self.consistency_status.setText(self._reference_message())
 
     def _choose_external_reference(self):
         if self._busy():
@@ -700,6 +701,8 @@ class AlbumStudioPage(QWidget):
         self._save()
         self._intelligence_report=None
         self.consistency_detail.clear()
+        self.more_results_btn.hide()
+        self._update_ab_button()
         self._update_external_reference_display()
 
     def _clear_external_reference(self):
@@ -710,6 +713,8 @@ class AlbumStudioPage(QWidget):
         self._save()
         self._intelligence_report=None
         self.consistency_detail.clear()
+        self.more_results_btn.hide()
+        self._update_ab_button()
         self._update_external_reference_display()
 
     def _refresh_reference_picker(self):
@@ -729,7 +734,7 @@ class AlbumStudioPage(QWidget):
             self.reference_picker.addItem(
                 track.get('title','') + ('' if available else ' · à produire'),
                 (i, track['path']))
-            if available and track['path'] == selected_path:
+            if track['path'] == selected_path:
                 self.reference_picker.setCurrentIndex(self.reference_picker.count()-1)
         self.reference_picker.blockSignals(False)
         self._update_external_reference_display()
@@ -839,7 +844,7 @@ class AlbumStudioPage(QWidget):
             lines.append(f'{row["index"]+1:02d}. {row["title"]}: {info}'
                          + ('\n    ↳ ' + suggestion if suggestion else ''))
         self.consistency_detail.setText('\n'.join(lines))
-        self.more_results_btn.setVisible(len(lines)>2)
+        self.more_results_btn.setVisible(len(lines)>2 and measured>0)
         self.more_results_btn.setChecked(False)
         if measured==0:
             self.consistency_detail.setText(
@@ -1052,6 +1057,20 @@ class AlbumStudioPage(QWidget):
                 'Le WAV de référence est manquant ou invalide. '
                 'Change la référence avant Auto Produce Album.')
             return
+        if self._reference_mode()=='album':
+            choice=self.reference_picker.currentData()
+            if choice is not None:
+                row=next((x for x in self.project['tracks'] if x['path']==choice[1]),None)
+                result=(row or {}).get('result') or {}
+                candidate=result.get('file')
+                if (row is not None and row.get('status')=='qc_pass'
+                        and result.get('status')=='qc_pass' and candidate
+                        and Path(candidate).is_file()):
+                    external=Path(candidate)
+                else:
+                    self.progress_text.setText(
+                        'Référence d’album sélectionnée, mais master QC en attente : '
+                        'prémix guidé par les préférences habituelles.')
         self._worker = AlbumBatchWorker(
             rows, self.export_dir, self,
             reference_path=library_path(self.root),
