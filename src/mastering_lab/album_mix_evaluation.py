@@ -141,7 +141,7 @@ def validate_selection(proposal, metrics):
     return {'selected': selected, 'reason': reason.strip()}
 
 
-def choose_candidate(paths, *, analyzer=None, ask_fn=None, model='hermes3:8b', enabled=True, reference_path=None, preferences_path=None):
+def choose_candidate(paths, *, analyzer=None, ask_fn=None, model='hermes3:8b', enabled=True, reference_path=None, preferences_path=None, external_reference_wav=None):
     """On any measurement, model, or validation failure, master Balanced.
 
     Safety checks apply to AI choices; Balanced fallback is still inspected by
@@ -153,15 +153,27 @@ def choose_candidate(paths, *, analyzer=None, ask_fn=None, model='hermes3:8b', e
         if not enabled:
             raise ValueError('Sélection IA désactivée')
         reference = None
+        from .reference_learning import load_active_context, extract_features
         if reference_path is not None:
-            from .reference_learning import load_active_context, extract_features
             reference = load_active_context(reference_path)
-            if reference:
-                # The reference is NOT a direct measure of candidate quality.
-                # Give Hermes comparable relative spectral measurements for each WAV.
-                candidate_profiles = {key: extract_features(paths[key])['spectral_shares']
-                                      for key in CANDIDATES}
-                reference = {**reference, 'candidate_spectral_shares': candidate_profiles}
+        if external_reference_wav is not None:
+            from .album_external_reference import validate_external_reference
+            standalone = validate_external_reference(external_reference_wav)
+            # A manually selected single-song WAV takes precedence over
+            # general multi-song Reference Learning when producing this album.
+            standalone_features = extract_features(standalone)
+            reference = {
+                'count':1, 'bands_hz':list(map(list, __import__(
+                    'mastering_lab.reference_learning', fromlist=['BANDS_HZ']).BANDS_HZ)),
+                'mean_spectral_shares':standalone_features['spectral_shares'],
+                'median_crest_db':standalone_features['crest_db'],
+                'source_kind':'album_standalone_wav',
+                'limitations':'One sampled WAV used as a weak timbre preference, not a full mix match.'}
+        if reference:
+            # Derived measurements ONLY reach local Hermes, never source audio.
+            candidate_profiles = {key: extract_features(paths[key])['spectral_shares']
+                                  for key in CANDIDATES}
+            reference = {**reference, 'candidate_spectral_shares': candidate_profiles}
         preferences = None
         if preferences_path is not None:
             from .preference_learning import preference_context
@@ -173,7 +185,7 @@ def choose_candidate(paths, *, analyzer=None, ask_fn=None, model='hermes3:8b', e
         chosen = validate_selection(proposal, metrics)
         return chosen['selected'], {'mode':'hermes', 'model':model, 'metrics':metrics,
                                     'selected':chosen['selected'], 'reason':chosen['reason'],
-                                    'reference_used': bool(reference), 'reference': reference, 'preferences_used': bool(preferences),
+                                    'reference_used': bool(reference), 'reference_kind': ('album_standalone_wav' if external_reference_wav else 'inspiration_library'), 'reference': reference, 'preferences_used': bool(preferences),
                                     'limitations':'Full-file RMS/sample peak/crest/correlation only; no LUFS/true peak or listening evaluation.'}
     except Exception as exc:
         return 'balanced', {'mode':'fallback', 'selected':'balanced', 'metrics':metrics,
