@@ -63,6 +63,30 @@ class AlbumBatchWorker(QThread):
             self.stage.emit(finished, count, f'{finished}/{count} chansons examinées')
         self.done.emit(self.stop_event.is_set())
 
+class MasterRecognitionWorker(QThread):
+    item = Signal(str, object, str)
+    finished_scan = Signal(int, int)
+
+    def __init__(self, paths, parent=None):
+        super().__init__(parent)
+        self.paths=tuple(paths)
+
+    def run(self):
+        from .existing_master_import import recognize_master, ExistingMasterError
+        from .album_stem_pipeline import source_signature
+        success=0
+        for path in self.paths:
+            try:
+                result=recognize_master(path)
+                result['album_source_signature']=source_signature(path,'stereo')
+                result['album_imported_existing_master']=True
+                self.item.emit(path,result,'')
+                success+=1
+            except (ExistingMasterError,OSError,ValueError) as exc:
+                self.item.emit(path,None,str(exc))
+        self.finished_scan.emit(success,len(self.paths))
+
+
 class AlbumIntelligenceWorker(QThread):
     completed = Signal(object)
     failed = Signal(str)
@@ -91,6 +115,7 @@ class AlbumStudioPage(QWidget):
         self.export_dir = self.root / 'sound' / 'output' / 'album_studio'
         self._worker = None
         self._intelligence_worker = None
+        self._recognition_worker = None
         self._intelligence_report = None
         try:
             self.project = load_project(self.project_path)
@@ -111,7 +136,7 @@ class AlbumStudioPage(QWidget):
         heading.setStyleSheet('font-size:23px;font-weight:750;background:transparent')
         top.addWidget(heading)
         top.addStretch()
-        self.label = QLabel('v0.25.1 · Album Match Advisor')
+        self.label = QLabel('v0.25.2 · Smart Master Import')
         self.label.setStyleSheet('color:#afb4c9;background:transparent')
         top.addWidget(self.label)
         layout.addLayout(top)
@@ -134,11 +159,19 @@ class AlbumStudioPage(QWidget):
         self.summary = QLabel()
         self.summary.setStyleSheet('background:transparent;color:#b7c0d1')
         layout.addWidget(self.summary)
+        self.import_master_btn=QPushButton('✓ Reconnaître les masters QC existants (sans remasteriser)')
+        self.import_master_btn.setToolTip('Vérification indépendante du WAV et du rapport .qc.json en local.')
+        self.import_master_btn.clicked.connect(self._recognize_existing)
+        layout.addWidget(self.import_master_btn)
+        self.recognition_status=QLabel('Les masters déjà validés sont reconnus avec leur .qc.json. Les autres WAV restent en attente.')
+        self.recognition_status.setWordWrap(True)
+        self.recognition_status.setStyleSheet('color:#aebbd1;font-size:11px;')
+        layout.addWidget(self.recognition_status)
         reference_row = QHBoxLayout()
-        reference_caption = QLabel('Chanson de référence :')
+        reference_caption = QLabel('Référence d’album (master QC) :')
         reference_row.addWidget(reference_caption)
         self.reference_picker = QComboBox()
-        self.reference_picker.setToolTip('Choisis un master QC réussi comme référence pour comparer les autres.')
+        self.reference_picker.setToolTip('Ton propre master validé sert à comparer l’album. Distinct des références musicales de Reference Learning.')
         self.reference_picker.currentIndexChanged.connect(self._reference_changed)
         reference_row.addWidget(self.reference_picker, 1)
         self.compare_album_btn = QPushButton('✦ Analyser la cohérence')
@@ -199,7 +232,50 @@ class AlbumStudioPage(QWidget):
     def _busy(self):
         return bool((self._worker is not None and self._worker.isRunning())
                     or (self._intelligence_worker is not None
-                        and self._intelligence_worker.isRunning()))
+                        and self._intelligence_worker.isRunning())
+                    or (self._recognition_worker is not None
+                        and self._recognition_worker.isRunning()))
+
+    def _recognize_existing(self):
+        if self._busy():
+            return
+        paths=[t['path'] for t in self.project['tracks']
+               if t['kind']=='stereo' and t.get('status')!='qc_pass']
+        if not paths:
+            self.recognition_status.setText('Aucun WAV en attente de vérification.')
+            return
+        worker=MasterRecognitionWorker(paths,self)
+        self._recognition_worker=worker
+        worker.item.connect(self._recognition_result)
+        worker.finished_scan.connect(self._recognition_done)
+        worker.finished.connect(self._recognition_finished)
+        worker.finished.connect(worker.deleteLater)
+        self.import_master_btn.setEnabled(False)
+        self.recognition_status.setText('Vérification locale des WAV et QC…')
+        worker.start()
+
+    def _recognition_result(self,path,result,error):
+        for track in self.project['tracks']:
+            if track['kind']=='stereo' and track['path']==path:
+                if result is not None:
+                    track['result']=result
+                    track['status']='qc_pass'
+                    track['error']=''
+                else:
+                    track['error']='QC import : '+error
+                    track['status']='waiting'
+                break
+        self._save()
+        self._refresh()
+
+    def _recognition_done(self,success,total):
+        self.recognition_status.setText(
+            f'{success}/{total} master(s) reconnus et vérifiés · '
+            f'{total-success} en attente de QC ou de rapport valide.')
+
+    def _recognition_finished(self):
+        self._recognition_worker=None
+        self._refresh()
 
     def _refresh_reference_picker(self):
         tracks = self.project['tracks']
@@ -330,6 +406,12 @@ class AlbumStudioPage(QWidget):
         if count:
             self._save()
             self._refresh()
+            # An existing QC sidecar triggers read-only verification automatically.
+            # For fresh or unmastered WAVs no action is taken; there is never
+            # an implicit FFmpeg render or Auto Master here.
+            if any(kind=='stereo' and Path(path).with_suffix('.qc.json').is_file()
+                   for path,kind in items):
+                self._recognize_existing()
         if errors:
             QMessageBox.warning(self, 'Fichiers ignorés', '\n'.join(errors[:8]))
 
@@ -434,6 +516,9 @@ class AlbumStudioPage(QWidget):
         self.summary.setText(f'{len(tracks)} chansons · {nstereo} WAV stéréo · {nstems} projets stems')
         self.run_btn.setEnabled(bool(tracks) and not self._busy())
         self.back_btn.setEnabled(not self._busy())
+        self.import_master_btn.setEnabled(not self._busy() and any(
+            t['kind']=='stereo' and t.get('status')!='qc_pass'
+            for t in self.project['tracks']))
         self._refresh_reference_picker()
 
     def _run(self):
@@ -556,3 +641,5 @@ class AlbumStudioPage(QWidget):
                 self._worker.wait(5000)
             if self._intelligence_worker is not None and self._intelligence_worker.isRunning():
                 self._intelligence_worker.wait(5000)
+            if self._recognition_worker is not None and self._recognition_worker.isRunning():
+                self._recognition_worker.wait(5000)

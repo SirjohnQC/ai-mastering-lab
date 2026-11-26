@@ -22,14 +22,17 @@ class ReferenceWorker(QThread):
 class ReferenceLibraryDialog(QDialog):
     def __init__(self, root, parent=None):
         super().__init__(parent)
-        self.setWindowTitle('Reference Learning — Bibliothèque locale')
+        self.setWindowTitle('Reference Learning — Inspiration sonore (local)')
         self.setMinimumWidth(560)
         self.path = library_path(root)
         self.library = load_library(self.path)
         self.worker = None
         layout = QVBoxLayout(self)
-        info = QLabel('Ajoute des WAV/FLAC/MP3 dont tu aimes la production. Chaque fichier est analysé localement. '
-                      'Coche les références à utiliser pour les futures décisions Hermes.')
+        info = QLabel('INSPIRATION SONORE — WAV/FLAC/MP3 analysés localement. '
+                      'Les références actives peuvent influencer les propositions Hermes de sélection de mix '
+                      'et les propositions AI FX/EQ; elles ne modifient pas directement Auto Master '
+                      'et ne servent pas de chanson de référence pour un album. '
+                      'Aucun entraînement du modèle ni copie du son.')
         info.setWordWrap(True)
         layout.addWidget(info)
         self.list = QListWidget()
@@ -67,7 +70,7 @@ class ReferenceLibraryDialog(QDialog):
             self.list.addItem(item)
         self.list.blockSignals(False)
         self.status.setText(f"{len(active)} référence(s) actives / {len(self.library['entries'])} importée(s). "
-                            'Un profil moyen guide Hermes, sans entraîner le modèle.')
+                            'Profil spectral moyen disponible pour les décisions Hermes compatibles; aucun entraînement.')
 
     def _changed(self, _item):
         from PySide6.QtCore import Qt
