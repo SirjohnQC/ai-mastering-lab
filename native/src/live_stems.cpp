@@ -276,6 +276,8 @@ int main(int argc,char** argv) {
     thread.startThread();
     LiveMix mixer(thread);
     for (int i=1;i<args.size();++i) {
+        reply(event("progress","Opening stem "+String(i)+"/"+
+                    String(args.size()-1)));
         String error;
         if (!mixer.add(File(args[i]),formats,error)) {
             reply(event("error",error));
