@@ -153,7 +153,7 @@ def choose_candidate(paths, *, analyzer=None, ask_fn=None, model='hermes3:8b', e
         if not enabled:
             raise ValueError('Sélection IA désactivée')
         reference = None
-        from .reference_learning import load_active_context, extract_features
+        from .reference_learning import load_active_context, extract_features, BANDS_HZ
         if reference_path is not None:
             reference = load_active_context(reference_path)
         if external_reference_wav is not None:
@@ -163,8 +163,7 @@ def choose_candidate(paths, *, analyzer=None, ask_fn=None, model='hermes3:8b', e
             # general multi-song Reference Learning when producing this album.
             standalone_features = extract_features(standalone)
             reference = {
-                'count':1, 'bands_hz':list(map(list, __import__(
-                    'mastering_lab.reference_learning', fromlist=['BANDS_HZ']).BANDS_HZ)),
+                'count':1, 'bands_hz':[list(band) for band in BANDS_HZ],
                 'mean_spectral_shares':standalone_features['spectral_shares'],
                 'median_crest_db':standalone_features['crest_db'],
                 'source_kind':'album_standalone_wav',
