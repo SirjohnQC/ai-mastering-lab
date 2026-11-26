@@ -41,10 +41,12 @@ class LiveStemDialog(QDialog):
         self.ready=False
         self._startup_phase='pending'
         self._last_native_error=''
+        self._forced_timeout=False
+        self._closing_engine=False
         self.stdout=b''
         self._loading=False
         self.output=None
-        self.setWindowTitle('FRANKENSTEM · Live Stem Lab v0.27.0')
+        self.setWindowTitle('FRANKENSTEM · Live Stem Lab v0.27.2')
         self.setMinimumWidth(690)
         v=QVBoxLayout(self)
         self.state=QLabel('Initialisation du moteur JUCE…')
@@ -126,7 +128,7 @@ class LiveStemDialog(QDialog):
             lambda *_:self._ended())
         self.watchdog=QTimer(self)
         self.watchdog.setSingleShot(True)
-        self.watchdog.setInterval(12000)
+        self.watchdog.setInterval(15000)
         self.watchdog.timeout.connect(self._startup_timeout)
         self.process.started.connect(self._started)
         self.poll=QTimer(self)
@@ -149,20 +151,29 @@ class LiveStemDialog(QDialog):
         self.state.setText('JUCE démarré · préparation des stems et du périphérique audio…')
 
     def _process_error(self,_error):
-        self._startup_phase='error'
+        # QProcess emits Crashed after *our own* watchdog calls kill().
+        # Preserve the real timeout reason, not a fake spontaneous crash.
+        if self._forced_timeout or self._closing_engine:
+            return
+        self._startup_phase='crash'
         self.watchdog.stop()
-        self.state.setText('⚠ Impossible de lancer JUCE : '+self.process.errorString()+
-                           ' · Reconstruis frankenstem-live si nécessaire.')
+        self.state.setText(
+            '⚠ JUCE s’est arrêté anormalement : '+self.process.errorString()+
+            ' · Dernière étape : '+self._startup_phase+
+            ('. Détail : '+self._last_native_error[-180:]
+             if self._last_native_error else '.'))
+
 
     def _startup_timeout(self):
         if self.ready:
             return
         phase=self._startup_phase
         self._startup_phase='timeout'
+        self._forced_timeout=True
         self.state.setText(
-            '⚠ Le moteur JUCE ne répond pas (12 secondes). '
-            'Dernière étape : '+phase+
-            '. Vérifie le périphérique audio, les stems et la compilation native.')
+            '⚠ Temps limite dépassé : JUCE n’a pas terminé la phase « '+phase+
+            ' » en 15 secondes. FRANKENSTEM a fermé le processus bloqué. '
+            'Ce n’est pas un crash natif confirmé.')
         self.fx_note.setText(
             'Live FX indisponible. Le mastering et les fichiers sources sont intacts. '
             'Consulte la sortie du terminal et reconstruis frankenstem-live.')
@@ -176,14 +187,17 @@ class LiveStemDialog(QDialog):
         self.watchdog.stop()
         for item in self.controls: item.setEnabled(False)
         self.buttons.button(QDialogButtonBox.Save).setEnabled(False)
+        if self._closing_engine or self._forced_timeout:
+            return
         if was_ready and self.isVisible():
             self.state.setText(
-                '⚠ Le moteur audio JUCE est fermé. '
-                'Rouvre Live FX pour repartir une session propre.')
-        elif self.isVisible() and self._startup_phase not in ('timeout','error'):
+                '⚠ Le moteur audio JUCE s’est fermé pendant la session. '
+                'Code de sortie : '+str(self.process.exitCode()))
+        elif self.isVisible() and self._startup_phase!='crash':
             self.state.setText(
                 '⚠ JUCE s’est fermé avant d’être prêt (code '
                 +str(self.process.exitCode())+'). '
+                'Dernière étape : '+self._startup_phase+' · '
                 +self._last_native_error[-180:])
 
     def _stderr(self):
@@ -206,6 +220,8 @@ class LiveStemDialog(QDialog):
         if status=='progress':
             self._startup_phase=str(data.get('message','Initialisation'))
             self.state.setText('JUCE · '+self._startup_phase+'…')
+            # This watchdog measures stalled phases, not total song load time.
+            self.watchdog.start()
             return
         if status=='ready':
             self.watchdog.stop()
@@ -300,6 +316,7 @@ class LiveStemDialog(QDialog):
         self.accept()
 
     def _shutdown(self):
+        self._closing_engine=True
         self.poll.stop()
         self.watchdog.stop()
         if self.process.state()!=QProcess.NotRunning:
