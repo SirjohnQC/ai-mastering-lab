@@ -8,11 +8,11 @@ from pathlib import Path
 import sys
 
 from PySide6.QtCore import Qt, QProcess, QUrl, Signal, QTimer, QObject
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QComboBox, QPlainTextEdit, QSplitter, QFrame, QMessageBox,
     QSlider, QProgressBar, QGroupBox, QGridLayout, QFileDialog, QDoubleSpinBox,
-    QDockWidget, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QSpinBox, QLineEdit, QAbstractItemView, QDialog)
+    QDockWidget, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QSpinBox, QLineEdit, QAbstractItemView, QDialog, QSplashScreen)
 from .version import APP_VERSION, window_title
 from .ollama_startup import ensure_ollama_running
 from .live_ab import LiveAB
@@ -743,6 +743,30 @@ def main(root:Path|None=None)->int:
             PluginSetupDialog(root/'settings'/'vst_roles.json').exec()
     except (ValueError,OSError) as exc:
         QMessageBox.warning(None,'Plugin settings',f'Plugin setup could not load: {exc}')
+    # Run the JUCE device preflight in the startup splash, not on opening
+    # a song. This process has a hard timeout and never exports audio.
+    splash_art=QPixmap(570,190)
+    splash_art.fill(QColor('#171923'))
+    splash=QSplashScreen(splash_art)
+    splash.show()
+    splash.showMessage('FRANKENSTEM · Vérification du moteur audio JUCE…',
+                       Qt.AlignCenter|Qt.AlignBottom,QColor('#e7e0ff'))
+    app.processEvents()
+    from .live_engine_startup import check_engine
+    live_preflight=check_engine(root,timeout=5)
+    splash.showMessage('FRANKENSTEM · Chargement de l’interface…',
+                       Qt.AlignCenter|Qt.AlignBottom,QColor('#e7e0ff'))
+    app.processEvents()
     win=MainWindow(root);win.show()
+    splash.finish(win)
+    # Permanent status: the Ollama startup check uses showMessage() and would
+    # otherwise immediately overwrite the JUCE preflight diagnostic.
+    win.live_engine_status=QLabel(
+        ('⚡ Live Engine · ' if live_preflight['ready'] else
+         '⚠ Live Engine · ')+live_preflight['reason'])
+    win.live_engine_status.setToolTip(live_preflight['reason'])
+    win.live_engine_status.setStyleSheet(
+        'color:#7ee3ad;' if live_preflight['ready'] else 'color:#ffcb7d;')
+    win.statusBar().addPermanentWidget(win.live_engine_status,1)
     QTimer.singleShot(0, win.start_ollama_check)
     return app.exec()

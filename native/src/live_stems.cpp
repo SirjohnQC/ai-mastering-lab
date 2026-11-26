@@ -244,10 +244,29 @@ int main(int argc,char** argv) {
     ScopedJuceInitialiser_GUI juceInit;
     StringArray args;
     for(int i=1;i<argc;++i) args.add(String::fromUTF8(argv[i]));
+    // Startup preflight can check device availability BEFORE a song is opened.
+    // Never take control of a user's audio device for longer than necessary.
+    if (args.size()==1 && args[0]=="--probe") {
+        reply(event("progress","Checking JUCE audio device"));
+        AudioDeviceManager preflight;
+        const String failure=preflight.initialise(0,2,nullptr,true);
+        if (failure.isNotEmpty() || preflight.getCurrentAudioDevice()==nullptr) {
+            reply(event("error","JUCE audio device unavailable: "+failure));
+            return 4;
+        }
+        auto* ok=new DynamicObject();
+        ok->setProperty("status","probe_ok");
+        ok->setProperty("device",preflight.getCurrentAudioDevice()->getName());
+        ok->setProperty("sample_rate",preflight.getCurrentAudioDevice()->getCurrentSampleRate());
+        reply(var(ok));
+        preflight.closeAudioDevice();
+        return 0;
+    }
     if (args.size()<2 || args[0]!="--stems") {
         reply(event("error","Usage: frankenstem-live --stems first.wav second.wav ..."));
         return 2;
     }
+    reply(event("progress","Opening stem files"));
     AudioFormatManager formats;
     formats.registerBasicFormats();
     TimeSliceThread thread("Frankenstem stem disk read ahead");
@@ -261,6 +280,7 @@ int main(int argc,char** argv) {
             return 3;
         }
     }
+    reply(event("progress","Opening JUCE output device"));
     AudioDeviceManager devices;
     const String failure=devices.initialise(0,2,nullptr,true);
     if (failure.isNotEmpty()) {
@@ -287,6 +307,7 @@ int main(int argc,char** argv) {
             }
         }
     }
+    reply(event("progress","Preparing streaming buffers"));
     AudioSourcePlayer player;
     player.setSource(&mixer);
     devices.addAudioCallback(&player);

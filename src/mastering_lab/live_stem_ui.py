@@ -16,16 +16,11 @@ from PySide6.QtWidgets import (
 
 from .stem_mixer import config_template
 from .stem_saturation import validated_selections, suggestions
+from .live_engine_startup import locate_engine
 
 
 def find_live_engine(root):
-    root=Path(root)
-    candidates=(
-        root/'native'/'build'/'frankenstem-live_artefacts'/'Release'/'frankenstem-live.exe',
-        root/'native'/'build'/'frankenstem-live_artefacts'/'frankenstem-live.exe',
-        root/'native'/'build'/'Release'/'frankenstem-live.exe',
-    )
-    return next((p for p in candidates if p.is_file()),None)
+    return locate_engine(root)
 
 
 class LiveStemDialog(QDialog):
@@ -44,6 +39,8 @@ class LiveStemDialog(QDialog):
         self.duration=0.
         self.seek_active=False
         self.ready=False
+        self._startup_phase='pending'
+        self._last_native_error=''
         self.stdout=b''
         self._loading=False
         self.output=None
@@ -124,10 +121,14 @@ class LiveStemDialog(QDialog):
         self.process=QProcess(self)
         self.process.readyReadStandardOutput.connect(self._read)
         self.process.readyReadStandardError.connect(self._stderr)
-        self.process.errorOccurred.connect(
-            lambda _error:self.state.setText('Erreur moteur JUCE : '+self.process.errorString()))
+        self.process.errorOccurred.connect(self._process_error)
         self.process.finished.connect(
             lambda *_:self._ended())
+        self.watchdog=QTimer(self)
+        self.watchdog.setSingleShot(True)
+        self.watchdog.setInterval(12000)
+        self.watchdog.timeout.connect(self._startup_timeout)
+        self.process.started.connect(self._started)
         self.poll=QTimer(self)
         self.poll.setInterval(700)
         self.poll.timeout.connect(lambda:self._send({'cmd':'status'}))
@@ -139,23 +140,58 @@ class LiveStemDialog(QDialog):
             return
         self.process.setProgram(str(executable))
         self.process.setArguments(['--stems',*[row['file'] for row in self.rows]])
+        self.state.setText('Chargement des stems dans le moteur JUCE…')
         self.process.start()
+        self.watchdog.start()
+
+    def _started(self):
+        self._startup_phase='started'
+        self.state.setText('JUCE démarré · préparation des stems et du périphérique audio…')
+
+    def _process_error(self,_error):
+        self._startup_phase='error'
+        self.watchdog.stop()
+        self.state.setText('⚠ Impossible de lancer JUCE : '+self.process.errorString()+
+                           ' · Reconstruis frankenstem-live si nécessaire.')
+
+    def _startup_timeout(self):
+        if self.ready:
+            return
+        phase=self._startup_phase
+        self._startup_phase='timeout'
+        self.state.setText(
+            '⚠ Le moteur JUCE ne répond pas (12 secondes). '
+            'Dernière étape : '+phase+
+            '. Vérifie le périphérique audio, les stems et la compilation native.')
+        self.fx_note.setText(
+            'Live FX indisponible. Le mastering et les fichiers sources sont intacts. '
+            'Consulte la sortie du terminal et reconstruis frankenstem-live.')
+        if self.process.state()!=QProcess.NotRunning:
+            self.process.kill()
 
     def _ended(self):
         was_ready=self.ready
         self.ready=False
         self.poll.stop()
+        self.watchdog.stop()
         for item in self.controls: item.setEnabled(False)
         self.buttons.button(QDialogButtonBox.Save).setEnabled(False)
         if was_ready and self.isVisible():
             self.state.setText(
                 '⚠ Le moteur audio JUCE est fermé. '
                 'Rouvre Live FX pour repartir une session propre.')
+        elif self.isVisible() and self._startup_phase not in ('timeout','error'):
+            self.state.setText(
+                '⚠ JUCE s’est fermé avant d’être prêt (code '
+                +str(self.process.exitCode())+'). '
+                +self._last_native_error[-180:])
 
     def _stderr(self):
         # Only show errors, never flood the UI from the audio callback.
         data=bytes(self.process.readAllStandardError()).decode('utf-8','replace')
-        if data.strip(): self.fx_note.setText(data[-350:])
+        if data.strip():
+            self._last_native_error=data[-350:]
+            self.fx_note.setText(self._last_native_error)
 
     def _read(self):
         self.stdout+=bytes(self.process.readAllStandardOutput())
@@ -167,7 +203,12 @@ class LiveStemDialog(QDialog):
 
     def _message(self,data):
         status=data.get('status')
+        if status=='progress':
+            self._startup_phase=str(data.get('message','Initialisation'))
+            self.state.setText('JUCE · '+self._startup_phase+'…')
+            return
         if status=='ready':
+            self.watchdog.stop()
             expected=len(self.rows)
             if len(data.get('stems',[]))!=expected:
                 self.state.setText('Le moteur a chargé un nombre inattendu de stems.')
@@ -180,7 +221,9 @@ class LiveStemDialog(QDialog):
             self.poll.start()
             self._push_all()
         elif status=='error':
+            self.watchdog.stop()
             self.state.setText('⚠ '+str(data.get('message','Erreur audio')))
+            self.fx_note.setText('Relance Live FX après correction du problème. Aucun fichier source modifié.')
         elif status=='ok':
             self.duration=float(data.get('duration_seconds',self.duration))
             seconds=float(data.get('seconds',0))
@@ -258,6 +301,7 @@ class LiveStemDialog(QDialog):
 
     def _shutdown(self):
         self.poll.stop()
+        self.watchdog.stop()
         if self.process.state()!=QProcess.NotRunning:
             self._send({'cmd':'stop'})
             self.process.write(b'{"cmd":"quit"}\n')
