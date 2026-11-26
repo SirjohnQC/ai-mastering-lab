@@ -118,28 +118,33 @@ public:
             auto* dstR=info.buffer->getWritePointer(1,info.startSample);
             const float* srcL=scratch.getReadPointer(0);
             const float* srcR=stem->channels==2 ? scratch.getReadPointer(1) : srcL;
+            const float tapeG=1.f+.8f*drive;
+            const float tapeNorm=1.f/std::tanh(tapeG);
+            const float tubeG=1.f+drive, tubeShift=.14f*drive;
+            const float tubeCenter=std::tanh(tubeG*tubeShift);
+            const auto shape=[=](float x)->float {
+                if (style==1)
+                    return (std::tanh(tubeG*(x+tubeShift))-tubeCenter)/tubeG;
+                if (style==2) {
+                    const float z=jlimit(-1.f,1.f,x*(1.f+.65f*drive));
+                    return z-z*z*z/3.f;
+                }
+                return std::tanh(x*tapeG)*tapeNorm;
+            };
             for (int i=0;i<size;++i) {
-                // 15ms smoothing on wet mix and gain reduces parameter zipper noise.
+                // 15ms-ish smoothing on wet mix and gain reduces zipper noise.
                 stem->smoothedWet+=0.002f*(targetWet-stem->smoothedWet);
                 stem->smoothedGain+=0.002f*(gain-stem->smoothedGain);
                 const float w=stem->smoothedWet;
-                const auto shape=[style,drive](float x)->float {
-                    if (style==1) {
-                        const float g=1.f+drive,shift=.14f*drive;
-                        return (std::tanh(g*(x+shift))-std::tanh(g*shift))/g;
-                    }
-                    if (style==2) {
-                        const float z=jlimit(-1.f,1.f,x*(1.f+.65f*drive));
-                        return z-z*z*z/3.f;
-                    }
-                    const float g=1.f+.8f*drive;
-                    return std::tanh(x*g)/std::tanh(g);
-                };
-                const float l=(srcL[i]*(1-w)+shape(srcL[i])*w)*stem->smoothedGain;
-                const float r=(srcR[i]*(1-w)+shape(srcR[i])*w)*stem->smoothedGain;
+                float l=srcL[i],r=srcR[i];
+                // Bypass must be cheap even for a project with many stems.
+                if (w>1e-6f) {
+                    l=l*(1.f-w)+shape(l)*w;
+                    r=r*(1.f-w)+shape(r)*w;
+                }
                 const float pan=stem->channels==1 ? .7071068f : 1.0f;
-                dstL[i]+=l*pan;
-                dstR[i]+=r*pan;
+                dstL[i]+=l*stem->smoothedGain*pan;
+                dstR[i]+=r*stem->smoothedGain*pan;
             }
         }
         // Playback monitor only. Conserve headroom before summing independent
