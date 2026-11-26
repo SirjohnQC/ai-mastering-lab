@@ -5,6 +5,7 @@
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <juce_dsp/juce_dsp.h>
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <iostream>
@@ -60,6 +61,12 @@ public:
             error="Stem sample rates differ; resample before live audition"; return false;
         }
         if (rate<=0) rate=format->sampleRate;
+        if (shortestLength>0 && std::llabs(format->lengthInSamples-shortestLength) >
+                               (int64)(rate*0.05)) {
+            error="Stems differ in length by >50ms; align before live playback";
+            return false;
+        }
+        shortestLength=format->lengthInSamples;
         length=jmax(length,format->lengthInSamples);
         auto stem=std::make_unique<Stem>();
         stem->name=file.getFileName();
@@ -214,6 +221,7 @@ private:
     int blockSize=512;
     double rate=0;
     int64 length=0;
+    int64 shortestLength=0;
 };
 
 int main(int argc,char** argv) {
@@ -243,6 +251,25 @@ int main(int argc,char** argv) {
         reply(event("error","Audio device: "+failure));
         thread.stopThread(1000);
         return 4;
+    }
+    // JUCE reads stem frames natively; device rate MUST equal file rate.
+    // Configure the selected device rather than changing playback pitch.
+    if (auto* device=devices.getCurrentAudioDevice()) {
+        if (std::abs(device->getCurrentSampleRate()-mixer.sampleRate())>1.) {
+            AudioDeviceManager::AudioDeviceSetup setup;
+            devices.getAudioDeviceSetup(setup);
+            setup.sampleRate=mixer.sampleRate();
+            const String setupError=devices.setAudioDeviceSetup(setup,true);
+            if (setupError.isNotEmpty() ||
+                    !devices.getCurrentAudioDevice() ||
+                    std::abs(devices.getCurrentAudioDevice()->getCurrentSampleRate()-
+                             mixer.sampleRate())>1.) {
+                reply(event("error","Audio device cannot use stem sample rate; "
+                                    "please choose a compatible Windows audio format."));
+                thread.stopThread(1000);
+                return 4;
+            }
+        }
     }
     AudioSourcePlayer player;
     player.setSource(&mixer);
