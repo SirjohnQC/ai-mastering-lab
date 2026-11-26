@@ -23,7 +23,8 @@ MAX_TRUSTED_DELTA_DB = 18.0
 LOUDNESS_TOLERANCE_LU = 0.25
 MAX_COMPENSATION_DB = 1.5
 TP_CEILING_DBTP = -1.0
-PREVIEW_POLICY = 'tonal-match-matched-loudness-v1'
+PREVIEW_POLICY = 'tonal-match-matched-loudness-v2-adaptive-peak'
+ADAPTIVE_EQ_STRENGTHS = (1.0, 0.75, 0.5, 0.3)
 
 
 
@@ -175,33 +176,50 @@ def render_tonal_preview(master_path, report_track, cache_dir, *,
             pass
     intermediate=target / f'.album-tonal-ab-{digest}.eq.partial.wav'
     temp=target / f'.album-tonal-ab-{digest}.partial.wav'
-    eq=','.join(f'equalizer=f={f["frequency_hz"]}:t=o:w={f["width_octaves"]:.2f}:g={f["gain_db"]:.2f}'
-                for f in suggestion['filters'])
+    # Render EQ at full requested intensity, then progressively softer.
+    # Reject if TP and the A/B loudness match cannot BOTH pass.
     try:
-        _render(ffmpeg,source,intermediate,eq)
-        intermediate_lufs,_=_metrics(measure,intermediate)
-        compensation=original_lufs-intermediate_lufs
-        if abs(compensation)>MAX_COMPENSATION_DB:
-            raise RuntimeError('EQ affects loudness too much for trustworthy A/B matching.')
-        # Render a final PCM24 file without destructive limiting. If it cannot
-        # satisfy the peak ceiling *and* matched loudness, reject B.
-        filt=eq + f',volume={compensation:+.4f}dB'
-        _render(ffmpeg,source,temp,filt)
-        rendered=_probe_wav(temp)
-        if (rendered['channels']!=2 or rendered['sample_rate']!=meta['sample_rate']
-                or rendered['frames']!=meta['frames'] or rendered['subtype']!='PCM_24'):
-            raise RuntimeError('Tonal preview format/duration mismatch.')
-        lufs,tp=_metrics(measure,temp)
-        if tp>TP_CEILING_DBTP:
-            raise RuntimeError('Tonal preview exceeds -1 dBTP; cannot safely compare B.')
-        if abs(lufs-original_lufs)>LOUDNESS_TOLERANCE_LU:
-            raise RuntimeError('Tonal preview loudness mismatch; B is not level-matched.')
+        safe=None
+        last_peak=None
+        for strength in ADAPTIVE_EQ_STRENGTHS:
+            filters=[{**item,'gain_db':round(item['gain_db']*strength,3)}
+                     for item in suggestion['filters']]
+            if max(abs(item['gain_db']) for item in filters) < 0.12:
+                break
+            eq=','.join(
+                f'equalizer=f={item["frequency_hz"]}:t=o:'
+                f'w={item["width_octaves"]:.2f}:g={item["gain_db"]:+.3f}'
+                for item in filters)
+            _render(ffmpeg,source,intermediate,eq)
+            intermediate_lufs,_=_metrics(measure,intermediate)
+            compensation=original_lufs-intermediate_lufs
+            if abs(compensation)>MAX_COMPENSATION_DB:
+                raise RuntimeError('EQ changes loudness too much for a reliable A/B.')
+            _render(ffmpeg,source,temp,eq+f',volume={compensation:+.4f}dB')
+            rendered=_probe_wav(temp)
+            if (rendered['channels']!=2 or rendered['sample_rate']!=meta['sample_rate']
+                    or rendered['frames']!=meta['frames'] or rendered['subtype']!='PCM_24'):
+                raise RuntimeError('Tonal preview format/duration mismatch.')
+            lufs,tp=_metrics(measure,temp)
+            last_peak=tp
+            if abs(lufs-original_lufs)>LOUDNESS_TOLERANCE_LU:
+                raise RuntimeError('Tonal preview is not level-matched to A.')
+            if tp<=TP_CEILING_DBTP:
+                safe=(strength,filters,compensation,lufs,tp)
+                break
+        if safe is None:
+            raise RuntimeError(
+                'EQ still exceeds the -1 dBTP ceiling after gentler attempts '
+                f'(last peak {last_peak:.2f} dBTP). '
+                'A remains unchanged; try another Creative style.')
+        strength,filters,compensation,lufs,tp=safe
         temp.replace(output)
         record={'status':'preview_only','file':str(output),
                 'source_master':str(source),'fingerprint':fingerprint,
                 'kind':suggestion['kind'],'mode':mode,
                 'creative_style':creative_style if mode=='creative' else None,
-                'eq_filters':suggestion['filters'],
+                'eq_strength':strength,'eq_filters':filters,
+                'requested_eq_filters':suggestion['filters'],
                 'gain_db':round(compensation,4),
                 'original_lufs':round(original_lufs,3),
                 'measured_lufs':round(lufs,3),
