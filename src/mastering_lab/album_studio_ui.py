@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel
     QListWidget, QListWidgetItem, QAbstractItemView, QApplication)
 
 from .album_project import (empty_project, load_project, save_project,
-                            add_entries, discover_album, album_summary, reorder_tracks)
+                            add_entries, discover_album, album_summary, reorder_tracks, move_track_onto)
 from .album_match_advisor import advise_album, localized_card
 from .ui_language import get_language
 
@@ -111,27 +111,65 @@ class AlbumIntelligenceWorker(QThread):
 
 
 class AlbumOrderList(QListWidget):
-    """Allow a dedicated card handle to initiate the standard internal move."""
+    """Drop on a *whole song card*, never on a tiny insertion indicator."""
 
-    orderDropped = Signal()
+    orderRequested = Signal(str, str)  # dragged source path, hovered target path
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._drag_source_path = None
+        self.setDropIndicatorShown(False)
+
+    def dragEnterEvent(self, event):
+        if (event.source() is self and self._drag_source_path
+                and self.dragDropMode() == QAbstractItemView.InternalMove):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.source() is not self or not self._drag_source_path:
+            event.ignore()
+            return
+        target = self.itemAt(event.position().toPoint())
+        if target is None:
+            self.clearSelection()
+            event.ignore()
+            return
+        self.setCurrentItem(target)
+        event.acceptProposedAction()
+
+    def dragLeaveEvent(self, event):
+        self.clearSelection()
+        super().dragLeaveEvent(event)
 
     def dropEvent(self, event):
         if event.source() is not self or self.dragDropMode() != QAbstractItemView.InternalMove:
             event.ignore()
             return
-        before = [self.item(i).data(Qt.UserRole) for i in range(self.count())]
-        super().dropEvent(event)
-        after = [self.item(i).data(Qt.UserRole) for i in range(self.count())]
-        if event.isAccepted() and after != before:
-            self.orderDropped.emit()
+        target = self.itemAt(event.position().toPoint())
+        source_path = self._drag_source_path
+        target_path = target.data(Qt.UserRole) if target is not None else None
+        self.clearSelection()
+        if not source_path or not target_path or source_path == target_path:
+            event.ignore()
+            return
+        event.acceptProposedAction()
+        # The host updates and rebuilds cards after the drag event completes.
+        self.orderRequested.emit(source_path, target_path)
 
     def begin_handle_drag(self, item):
         if self.dragDropMode() != QAbstractItemView.InternalMove:
             return
         if item is None or self.row(item) < 0:
             return
+        self._drag_source_path = item.data(Qt.UserRole)
         self.setCurrentItem(item)
-        self.startDrag(Qt.MoveAction)
+        try:
+            self.startDrag(Qt.MoveAction)
+        finally:
+            self._drag_source_path = None
+            self.clearSelection()
 
 
 class AlbumDragHandle(QLabel):
@@ -200,7 +238,7 @@ class AlbumStudioPage(QWidget):
         heading.setStyleSheet('font-size:23px;font-weight:750;background:transparent')
         top.addWidget(heading)
         top.addStretch()
-        self.label = QLabel('v0.25.4 · Drag & Drop Album Order')
+        self.label = QLabel('v0.25.5 · Drop on Song Card')
         self.label.setStyleSheet('color:#afb4c9;background:transparent')
         top.addWidget(self.label)
         layout.addLayout(top)
@@ -274,7 +312,7 @@ class AlbumStudioPage(QWidget):
         self.consistency_detail.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.consistency_detail.setStyleSheet('color:#aebbd1;background:transparent;font-size:11px;')
         layout.addWidget(self.consistency_detail)
-        self.order_hint = QLabel('↕ Glisse les chansons pour changer leur ordre (sauvegarde automatique).')
+        self.order_hint = QLabel('⠿ Glisse une chanson directement SUR une autre carte pour changer son ordre.')
         self.order_hint.setStyleSheet('color:#afbbcf;background:transparent;font-size:11px;')
         layout.addWidget(self.order_hint)
         self.track_list = AlbumOrderList(self)
@@ -288,8 +326,7 @@ class AlbumStudioPage(QWidget):
             'QListWidget#albumTrackOrder::item {background:transparent; border:none; padding:0;}'
             'QListWidget#albumTrackOrder::item:selected {background:transparent;}')
         self._rebuilding_track_list = False
-        self.track_list.model().rowsMoved.connect(self._schedule_track_reorder)
-        self.track_list.orderDropped.connect(self._schedule_track_reorder)
+        self.track_list.orderRequested.connect(self._on_song_card_drop)
         layout.addWidget(self.track_list, 1)
         self.progress_text = QLabel('Prêt à organiser ton album.')
         self.progress_text.setStyleSheet('background:transparent;color:#b8c4de')
@@ -590,6 +627,25 @@ class AlbumStudioPage(QWidget):
         if self._busy(): return
         self.project['tracks'].pop(index)
         self._save(); self._refresh()
+
+    def _on_song_card_drop(self, source_path, target_path):
+        if self._busy():
+            return
+        QTimer.singleShot(0, lambda: self._move_song_onto(source_path, target_path))
+
+    def _move_song_onto(self, source_path, target_path):
+        if self._busy() or self._rebuilding_track_list:
+            return
+        try:
+            changed = move_track_onto(self.project, source_path, target_path)
+        except ValueError as exc:
+            QMessageBox.warning(self, 'Ordre de l’album', str(exc))
+            return
+        if changed:
+            self._save()
+            self._intelligence_report = None
+            self.consistency_detail.clear()
+            self._refresh()
 
     def _schedule_track_reorder(self, *_):
         # Qt emits rowsMoved as it performs the internal drag; read the
