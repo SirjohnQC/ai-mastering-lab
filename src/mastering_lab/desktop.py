@@ -759,8 +759,14 @@ def main(root:Path|None=None)->int:
     app.processEvents()
     win=MainWindow(root);win.show()
     splash.finish(win)
-    win.statusBar().showMessage(
+    # Permanent status: the Ollama startup check uses showMessage() and would
+    # otherwise immediately overwrite the JUCE preflight diagnostic.
+    win.live_engine_status=QLabel(
         ('⚡ Live Engine · ' if live_preflight['ready'] else
-         '⚠ Live Engine · ')+live_preflight['reason'],20000)
+         '⚠ Live Engine · ')+live_preflight['reason'])
+    win.live_engine_status.setToolTip(live_preflight['reason'])
+    win.live_engine_status.setStyleSheet(
+        'color:#7ee3ad;' if live_preflight['ready'] else 'color:#ffcb7d;')
+    win.statusBar().addPermanentWidget(win.live_engine_status,1)
     QTimer.singleShot(0, win.start_ollama_check)
     return app.exec()
