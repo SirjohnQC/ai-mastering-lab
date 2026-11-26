@@ -33,7 +33,7 @@ def source_signature(path: str | Path, kind: str) -> str:
     return hashlib.sha256(json.dumps(pieces, ensure_ascii=False).encode('utf-8')).hexdigest()
 
 
-def can_reuse_master(row: dict) -> bool:
+def can_reuse_master(row: dict, *, external_reference_wav=None) -> bool:
     result = row.get('result') or {}
     if row.get('status') != 'qc_pass' or result.get('status') != 'qc_pass':
         return False
@@ -55,7 +55,12 @@ def can_reuse_master(row: dict) -> bool:
         ref_path = result.get('album_reference_library_path')
         if ref_path and result.get('album_reference_signature') != reference_signature(ref_path):
             return False
+        # The user's standalone reference is part of the premix decision.
+        # Changing or removing it must invalidate previously chosen stem mixes.
         external_path = result.get('album_external_reference_path')
+        selected = str(Path(external_reference_wav).resolve()) if external_reference_wav else None
+        if (str(Path(external_path).resolve()) if external_path else None) != selected:
+            return False
         if external_path:
             try:
                 if result.get('album_external_reference_signature') != source_signature(external_path, 'stereo'):
