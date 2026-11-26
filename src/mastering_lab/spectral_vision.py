@@ -5,6 +5,7 @@ A spectrogram is not a substitute for listening or an artifact detector.
 """
 from __future__ import annotations
 import base64
+import io
 import json
 import math
 from pathlib import Path
@@ -20,6 +21,13 @@ from .ai_review import _local_endpoint, AIReviewError
 def render_spectrogram(wav_path: str | Path, out_path: str | Path, *, width=640, height=256) -> Path:
     """Bounded-memory time vs log-frequency PNG, calibrated to dBFS (approximate)."""
     out_path = Path(out_path)
+    canvas = spectrogram_image(wav_path, width=width, height=height)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(out_path, format='PNG', optimize=True)
+    return out_path
+
+
+def spectrogram_image(wav_path: str | Path, *, width=640, height=256) -> Image.Image:
     fft_size = 8192
     with sf.SoundFile(str(wav_path)) as f:
         if f.frames < fft_size or f.samplerate < 32000 or f.channels < 1:
@@ -53,9 +61,7 @@ def render_spectrogram(wav_path: str | Path, out_path: str | Path, *, width=640,
             y = 10 + round(height * math.log(hi/hz) / math.log(hi/lo))
             draw.text((4, y-7), f'{hz} Hz' if hz < 1000 else f'{hz//1000} kHz', fill=(205,210,220))
     draw.text((67, height + 18), '0%  |  Time across full song  |  100%', fill=(205,210,220))
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    canvas.save(out_path, format='PNG', optimize=True)
-    return out_path
+    return canvas
 
 
 def render_comparison_spectrograms(comparison: str | Path | dict) -> dict[str, str]:
@@ -66,7 +72,6 @@ def render_comparison_spectrograms(comparison: str | Path | dict) -> dict[str, s
 
 def _comparison_contact_sheet(png_paths: dict[str, str]) -> bytes:
     """Combine the three spectrograms into one bounded-size image for vision LLMs."""
-    import io
     # One moderately sized image is significantly cheaper than three separate images.
     from PIL import ImageOps
     canvas = Image.new('RGB', (704, 540), (15, 18, 28))
@@ -112,16 +117,41 @@ def _parse_vision_content(answer: str) -> dict:
 def local_vision_review(png_paths: dict[str, str], *, model='qwen3-vl:4b',
                         base_url='http://127.0.0.1:11434', timeout=150, transport=None) -> dict:
     """One compact comparison PNG; bounded response; no retry loop or bogus audio claims."""
-    if not isinstance(model, str) or not model.strip() or len(model) > 120:
-        raise ValueError('Modèle de vision Ollama invalide.')
-    endpoint = _local_endpoint(base_url)
-    img = base64.b64encode(_comparison_contact_sheet(png_paths)).decode('ascii')
     prompt = (
         'Voici 3 spectrogrammes superposés: Balanced, Vocal Focus, Punchy. '
         'Échelles identiques. En français, donne 2 différences VISUELLES observables, '
         'en 60 mots maximum. Si aucune différence visible: dis-le. '
         'Ne prétends pas avoir écouté le son. Pas de raisonnement, pas de JSON.'
     )
+    return _review_image(_comparison_contact_sheet(png_paths), prompt,
+                         model=model, base_url=base_url, timeout=timeout, transport=transport)
+
+
+def review_vocal_whistles(path, markers, *, model):
+    image = spectrogram_image(path)
+    with io.BytesIO() as output:
+        image.save(output, format='PNG')
+        png = output.getvalue()
+    measured = ', '.join(
+        f"{m['start']:.1f}–{m['end']:.1f} s à {m['hz']:.0f} Hz" for m in markers
+    ) or 'aucune crête stable détectée'
+    prompt = (
+        "Voici le spectrogramme d’une piste vocale. Les repères issus de la FFT "
+        f"sont : {measured}. En français, indique en deux phrases si des traits "
+        "horizontaux étroits sont visibles et ce qui pourrait être une harmonique normale. "
+        "Si la résolution est insuffisante, dis-le. Ne prétends pas avoir écouté "
+        "ni identifié l’origine IA du son. Réponds avec un objet JSON contenant "
+        "une liste observations et une liste limits."
+    )
+    return _review_image(png, prompt, model=model, base_url='http://127.0.0.1:11434',
+                         timeout=45, transport=None)
+
+
+def _review_image(png, prompt, *, model, base_url, timeout, transport):
+    if not isinstance(model, str) or not model.strip() or len(model) > 120:
+        raise ValueError('Modèle de vision Ollama invalide.')
+    endpoint = _local_endpoint(base_url)
+    img = base64.b64encode(png).decode('ascii')
     payload = {'model': model, 'stream': False, 'think': False,
                'options': {'temperature': 0, 'num_predict': 3072},
                'messages': [{'role':'user','content':prompt,'images':[img]}]}

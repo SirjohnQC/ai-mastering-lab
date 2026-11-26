@@ -9,6 +9,9 @@ UI=(ROOT/'src/mastering_lab/live_stem_ui.py').read_text(encoding='utf-8')
 
 
 class LiveTimeoutRegressionTests(unittest.TestCase):
+    def test_native_replies_use_one_line_per_event(self):
+        self.assertIn('JSON::toString(payload, true)', NATIVE)
+
     def test_disk_buffer_prefill_does_not_block_startup_per_stem(self):
         self.assertIn('stem->reader.get(),readAhead,false,65536,stem->channels,false',NATIVE)
         self.assertNotIn('stem->reader.get(),readAhead,false,65536,stem->channels,true',NATIVE)
@@ -30,8 +33,7 @@ class LiveTimeoutRegressionTests(unittest.TestCase):
         self.assertIn("self._startup_phase='timeout'",UI)
 
     def test_versions_and_conservative_audio(self):
-        version=(ROOT/'src/mastering_lab/version.py').read_text(encoding='utf-8')
-        self.assertIn('0.27.2',version)
+        self.assertIn('v{APP_VERSION}',UI)
         self.assertIn('AudioSourcePlayer player;',NATIVE)
         self.assertIn('devices.removeAudioCallback(&player);',NATIVE)
         self.assertIn('thread.stopThread(2000);',NATIVE)

@@ -6,6 +6,7 @@
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <juce_dsp/juce_dsp.h>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <iostream>
@@ -15,7 +16,8 @@
 using namespace juce;
 
 static void reply(const var& payload) {
-    std::cout << JSON::toString(payload, false).toStdString() << std::endl;
+    // The desktop preflight and Live FX both read one JSON event per line.
+    std::cout << JSON::toString(payload, true).toStdString() << std::endl;
 }
 static var event(const String& status, const String& message = {}) {
     auto* obj=new DynamicObject();
@@ -91,6 +93,7 @@ public:
             stem->buffered->prepareToPlay(maxBlock,sampleRate);
             stem->buffered->setNextReadPosition(playhead.load());
         }
+        repair.reset();
     }
 
     void releaseResources() override {
@@ -103,15 +106,27 @@ public:
         const bool anySolo=std::any_of(stems.begin(),stems.end(),
             [](const auto& s){return s->solo.load(std::memory_order_relaxed);});
         const int size=info.numSamples;
+        const auto frame=playhead.load(std::memory_order_relaxed);
+        // After a seek, hold every stem at the same frame until all disk
+        // buffers have caught up. A zero timeout never waits for disk I/O.
+        for (auto& stem : stems) {
+            const AudioSourceChannelInfo block(&stem->scratch, 0, size);
+            if (!stem->buffered->waitForNextAudioBlockReady(block, 0))
+                return;
+        }
         // Engine configured for stereo output; getNextAudioBlock is always <=
         // prepareToPlay block size in AudioSourcePlayer.
-        for (auto& stem:stems) {
+        for (size_t index=0; index<stems.size(); ++index) {
+            auto& stem=stems[index];
             auto& scratch=stem->scratch;
             scratch.clear();
             AudioSourceChannelInfo block(&scratch,0,size);
             stem->buffered->getNextAudioBlock(block);
-            if (stem->mute.load(std::memory_order_relaxed) ||
-                (anySolo && !stem->solo.load(std::memory_order_relaxed))) continue;
+            const bool selected = repair.stem == static_cast<int>(index);
+            const bool residual = repair.mode == Repair::residual;
+            if (residual ? !selected :
+                (stem->mute.load(std::memory_order_relaxed) ||
+                 (anySolo && !stem->solo.load(std::memory_order_relaxed)))) continue;
             float targetWet=stem->enabled.load(std::memory_order_relaxed) ?
                 stem->wet.load(std::memory_order_relaxed) : 0.0f;
             float gain=stem->gain.load(std::memory_order_relaxed);
@@ -146,6 +161,17 @@ public:
                     r=r*(1.f-w)+shape(r)*w;
                 }
                 const float pan=stem->channels==1 ? .7071068f : 1.0f;
+                if (selected) {
+                    const auto position = frame + i;
+                    const float edge = jlimit(0.f, 1.f, static_cast<float>(
+                        jmin(position - repair.start, repair.end - position)) / repair.fade);
+                    const float target = repair.mode == Repair::original ? 0.f : 1.f;
+                    repair.mix += (target - repair.mix) * repair.smoothing;
+                    const float removedL = (l - repair.filter(0, l)) * edge * repair.mix;
+                    const float removedR = (r - repair.filter(1, r)) * edge * repair.mix;
+                    l = residual ? removedL : l - removedL;
+                    r = residual ? removedR : r - removedR;
+                }
                 dstL[i]+=l*stem->smoothedGain*pan;
                 dstR[i]+=r*stem->smoothedGain*pan;
             }
@@ -178,6 +204,46 @@ public:
             if (!std::isfinite(seconds) || seconds<0) {error="Invalid seek time";return false;}
             seek((int64)jlimit(0.0,(double)length,seconds*rate));
             return true;
+        }
+        if (action=="whistle") {
+            const var stemValue = prop(msg,"stem");
+            if (stemValue.isVoid()) {
+                repair = {};
+                return true;
+            }
+            const int index = static_cast<int>(stemValue);
+            const double hz = static_cast<double>(prop(msg,"hz"));
+            const double start = static_cast<double>(prop(msg,"start"));
+            const double end = static_cast<double>(prop(msg,"end"));
+            if (index < 0 || index >= static_cast<int>(stems.size()) ||
+                !std::isfinite(hz) || !std::isfinite(start) || !std::isfinite(end) ||
+                hz < 3500 || hz > 12000 || hz >= rate * 0.48 ||
+                start < 0 || end <= start || end > static_cast<double>(length) / rate) {
+                error = "Invalid whistle marker";
+                return false;
+            }
+            repair = {};
+            repair.stem = index;
+            repair.start = static_cast<int64>(std::llround(start * rate));
+            repair.end = static_cast<int64>(std::llround(end * rate));
+            repair.fade = static_cast<float>(rate * 0.02);
+            repair.smoothing = 1.f / static_cast<float>(rate * 0.005);
+            auto coeff = dsp::IIR::ArrayCoefficients<float>::makePeakFilter(
+                rate, static_cast<float>(hz), 55.f, Decibels::decibelsToGain(-6.f));
+            repair.coefficients = {coeff[0] / coeff[3], coeff[1] / coeff[3],
+                                   coeff[2] / coeff[3], coeff[4] / coeff[3],
+                                   coeff[5] / coeff[3]};
+            return true;
+        }
+        if (action=="whistle_mode") {
+            const auto mode = prop(msg,"mode").toString();
+            if (mode == "original" || mode == "corrected" || mode == "residual") {
+                repair.mode = mode == "original" ? Repair::original :
+                              mode == "corrected" ? Repair::corrected : Repair::residual;
+                return true;
+            }
+            error = "Unknown whistle audition mode";
+            return false;
         }
         if (action=="set") {
             const int i=(int)prop(msg,"stem");
@@ -227,10 +293,32 @@ public:
     size_t count() const {return stems.size();}
     const Stem& stem(size_t i) const {return *stems[i];}
 private:
+    struct Repair {
+        enum Mode { original, corrected, residual };
+        Mode mode = original;
+        int stem = -1;
+        int64 start = 0, end = 0;
+        float fade = 1.f, smoothing = 1.f, mix = 0.f;
+        std::array<float, 5> coefficients {};
+        std::array<std::array<float, 2>, 2> state {};
+
+        void reset() { state = {}; }
+
+        float filter(int channel, float input) {
+            auto& delay = state[static_cast<size_t>(channel)];
+            const auto& c = coefficients;
+            const float output = c[0] * input + delay[0];
+            delay[0] = c[1] * input - c[3] * output + delay[1];
+            delay[1] = c[2] * input - c[4] * output;
+            return output;
+        }
+    };
+
     void seek(int64 pos) {
         const bool wasRunning=running.exchange(false);
         for (auto& stem:stems) stem->buffered->setNextReadPosition(pos);
         playhead.store(pos);
+        repair.reset();
         running.store(wasRunning);
     }
     TimeSliceThread& readAhead;
@@ -241,6 +329,7 @@ private:
     double rate=0;
     int64 length=0;
     int64 shortestLength=0;
+    Repair repair;
 };
 
 int main(int argc,char** argv) {
@@ -329,6 +418,7 @@ int main(int argc,char** argv) {
         auto* msg=new DynamicObject();
         msg->setProperty("status","ready");
         msg->setProperty("sample_rate",mixer.sampleRate());
+        msg->setProperty("whistle_preview",true);
         Array<var> stems;
         for(size_t i=0;i<mixer.count();++i) stems.add(mixer.stem(i).name);
         msg->setProperty("stems",var(stems));
@@ -345,7 +435,13 @@ int main(int argc,char** argv) {
         }
         if(prop(payload,"cmd").toString()=="quit") break;
         String error;
-        if (!mixer.command(payload,error)) reply(event("error",error));
+        bool accepted;
+        {
+            // JUCE serializes this lock with the audio-device callback.
+            const ScopedLock lock(devices.getAudioCallbackLock());
+            accepted = mixer.command(payload,error);
+        }
+        if (!accepted) reply(event("error",error));
         else reply(mixer.status());
     }
     std::fprintf(stderr,"[LIVE STOP] disconnecting device callback\n");

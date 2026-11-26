@@ -6,7 +6,9 @@ JSON commands, never rendering preview WAVs. Existing album export is unchanged.
 from __future__ import annotations
 
 import json
+from concurrent.futures import Future
 from pathlib import Path
+from threading import Event, Thread
 
 from PySide6.QtCore import Qt, QProcess, QTimer
 from PySide6.QtWidgets import (
@@ -17,6 +19,25 @@ from PySide6.QtWidgets import (
 from .stem_mixer import config_template
 from .stem_saturation import validated_selections, suggestions
 from .live_engine_startup import locate_engine
+from .version import APP_VERSION
+
+
+def _scan_whistles(path, model, cancelled, result):
+    try:
+        from .vocal_whistle import scan_vocal_whistles
+
+        markers = scan_vocal_whistles(path, cancelled=cancelled.is_set)
+        note = ''
+        if model and not cancelled.is_set():
+            try:
+                from .spectral_vision import review_vocal_whistles
+                review = review_vocal_whistles(path, markers, model=model)
+                note = ' '.join(review['observations'] + review['limits'])[:550]
+            except Exception as exc:
+                note = 'Vision Ollama indisponible · ' + str(exc)[:170]
+        result.set_result((markers, note))
+    except Exception as exc:
+        result.set_exception(exc)
 
 
 def find_live_engine(root):
@@ -46,7 +67,11 @@ class LiveStemDialog(QDialog):
         self.stdout=b''
         self._loading=False
         self.output=None
-        self.setWindowTitle('FRANKENSTEM · Live Stem Lab v0.27.2')
+        self.whistle_supported = False
+        self.whistle_results = {}
+        self.whistle_job = None
+        self.whistle_cancel = Event()
+        self.setWindowTitle(f'FRANKENSTEM · Live Stem Lab v{APP_VERSION}')
         self.setMinimumWidth(690)
         v=QVBoxLayout(self)
         self.state=QLabel('Initialisation du moteur JUCE…')
@@ -101,6 +126,7 @@ class LiveStemDialog(QDialog):
             'audibles pendant la lecture. Aucune exportation automatique.')
         self.fx_note.setWordWrap(True)
         v.addWidget(self.fx_note)
+        self._add_whistle_controls(v)
         buttons=QDialogButtonBox(QDialogButtonBox.Save|QDialogButtonBox.Cancel)
         buttons.button(QDialogButtonBox.Save).setText('✓ Approuver FX pour Auto Produce')
         buttons.accepted.connect(self._approve)
@@ -146,6 +172,108 @@ class LiveStemDialog(QDialog):
         self.process.start()
         self.watchdog.start()
 
+    def _add_whistle_controls(self, layout):
+        self.whistle_scan = QPushButton('Analyser les sifflements')
+        self.whistle_scan.clicked.connect(self._start_whistle_scan)
+        self.whistle_vision = QCheckBox('Vision Ollama')
+        self.whistle_vision.setToolTip('Ajoute un avis visuel du modèle configuré dans les réglages IA.')
+        row = QHBoxLayout()
+        row.addWidget(self.whistle_scan)
+        row.addWidget(self.whistle_vision)
+        layout.addLayout(row)
+
+        self.whistle_markers = QComboBox()
+        self.whistle_markers.setAccessibleName('Marqueurs de sifflement')
+        self.whistle_markers.currentIndexChanged.connect(self._select_whistle)
+        self.whistle_jump = QPushButton('Aller au passage')
+        self.whistle_jump.clicked.connect(self._jump_to_whistle)
+        self.whistle_mode = QComboBox()
+        self.whistle_mode.setAccessibleName('Écoute de la correction spectrale')
+        for label, mode in (('A · Original', 'original'), ('B · Atténué', 'corrected'),
+                            ('Résidu', 'residual')):
+            self.whistle_mode.addItem(label, mode)
+        self.whistle_mode.currentIndexChanged.connect(self._set_whistle_mode)
+        row = QHBoxLayout()
+        for widget in (self.whistle_markers, self.whistle_jump, self.whistle_mode):
+            row.addWidget(widget)
+        layout.addLayout(row)
+        self.whistle_note = QLabel()
+        self.whistle_note.setWordWrap(True)
+        self.whistle_note.setTextFormat(Qt.PlainText)
+        layout.addWidget(self.whistle_note)
+        self.whistle_poll = QTimer(self)
+        self.whistle_poll.setInterval(120)
+        self.whistle_poll.timeout.connect(self._finish_whistle_scan)
+
+    def _start_whistle_scan(self):
+        if not self.whistle_supported or not self.ready or self.whistle_job is not None:
+            return
+        model = None
+        if self.whistle_vision.isChecked():
+            from .ai_settings_ui import read_ai_preferences
+            model = read_ai_preferences(self.root)['vision_model']
+        result = Future()
+        self.whistle_job = self.active, result
+        self._refresh_whistles()
+        Thread(target=_scan_whistles,
+               args=(self.rows[self.active]['file'], model, self.whistle_cancel, result),
+               daemon=True).start()
+        self.whistle_poll.start()
+
+    def _finish_whistle_scan(self):
+        index, result = self.whistle_job
+        if not result.done():
+            return
+        self.whistle_poll.stop()
+        self.whistle_job = None
+        try:
+            self.whistle_results[index] = result.result()
+        except Exception as exc:
+            self.whistle_results[index] = [], 'Analyse indisponible · ' + str(exc)[:250]
+        self._refresh_whistles()
+
+    def _refresh_whistles(self):
+        available = self.ready and self.whistle_supported
+        self.whistle_scan.setEnabled(available and self.whistle_job is None)
+        self.whistle_vision.setEnabled(available and self.whistle_job is None)
+        markers, note = self.whistle_results.get(self.active, ([], ''))
+        self.whistle_markers.blockSignals(True)
+        self.whistle_markers.clear()
+        for marker in markers:
+            self.whistle_markers.addItem(
+                f"{marker['start']:.2f}–{marker['end']:.2f} s · {marker['hz']:.0f} Hz", marker)
+        self.whistle_markers.blockSignals(False)
+        has_marker = available and bool(markers)
+        for widget in (self.whistle_markers, self.whistle_jump, self.whistle_mode):
+            widget.setEnabled(has_marker)
+        if self.ready and not available:
+            status = 'Recompile frankenstem-live pour activer la correction spectrale.'
+        elif self.whistle_job is not None:
+            status = 'Analyse du stem en cours…'
+        elif self.active in self.whistle_results:
+            status = (f'{len(markers)} passage(s) à vérifier.' if markers else
+                      'Aucune crête étroite persistante repérée.')
+        else:
+            status = 'Choisis un stem vocal pour chercher des sifflements. Écoute seulement.'
+        self.whistle_note.setText(f'{status} {note}'.strip())
+        self._select_whistle()
+
+    def _select_whistle(self, *_):
+        self.whistle_mode.blockSignals(True)
+        self.whistle_mode.setCurrentIndex(0)
+        self.whistle_mode.blockSignals(False)
+        if self.whistle_supported:
+            marker = self.whistle_markers.currentData()
+            self._send({'cmd': 'whistle', **({'stem': self.active, **marker} if marker else {})})
+
+    def _set_whistle_mode(self, *_):
+        self._send({'cmd': 'whistle_mode', 'mode': self.whistle_mode.currentData()})
+
+    def _jump_to_whistle(self):
+        marker = self.whistle_markers.currentData()
+        if marker:
+            self._send({'cmd': 'seek', 'seconds': max(0, marker['start'] - 0.20)})
+
     def _started(self):
         self._startup_phase='started'
         self.state.setText('JUCE démarré · préparation des stems et du périphérique audio…')
@@ -188,6 +316,7 @@ class LiveStemDialog(QDialog):
         self.watchdog.stop()
         for item in self.controls: item.setEnabled(False)
         self.buttons.button(QDialogButtonBox.Save).setEnabled(False)
+        self._refresh_whistles()
         if self._closing_engine or self._forced_timeout:
             return
         if was_ready and self.isVisible():
@@ -232,11 +361,13 @@ class LiveStemDialog(QDialog):
                 self.process.kill()
                 return
             self.ready=True
+            self.whistle_supported = data.get('whistle_preview') is True
             self.state.setText('⚡ LIVE · JUCE · '+str(expected)+' stems synchronisés')
             for item in self.controls: item.setEnabled(True)
             self.buttons.button(QDialogButtonBox.Save).setEnabled(True)
             self.poll.start()
             self._push_all()
+            self._refresh_whistles()
         elif status=='error':
             self.watchdog.stop()
             self.state.setText('⚠ '+str(data.get('message','Erreur audio')))
@@ -282,6 +413,7 @@ class LiveStemDialog(QDialog):
         self.solo.setChecked(value.get('solo',False))
         self._loading=False
         self._update_numbers()
+        self._refresh_whistles()
 
     def _update_numbers(self):
         self.drive_title.setText(f'Drive : {self.drive.value()/10:.1f}')
@@ -318,6 +450,8 @@ class LiveStemDialog(QDialog):
 
     def _shutdown(self):
         self._closing_engine=True
+        self.whistle_cancel.set()
+        self.whistle_poll.stop()
         self.poll.stop()
         self.watchdog.stop()
         if self.process.state()!=QProcess.NotRunning:
