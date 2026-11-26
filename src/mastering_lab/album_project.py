@@ -113,6 +113,30 @@ def reorder_tracks(project, ordered_paths):
     return project
 
 
+
+def move_track_onto(project, source_path, target_path):
+    """Move one whole song to the *original index* of another song.
+
+    Dropping ON a card is an intuitive reorder, never replacement or deletion.
+    Exact track records (QC/master metadata) remain intact. No external
+    reference is inserted into the album inventory.
+    """
+    tracks = project.get('tracks')
+    if not isinstance(tracks,list):
+        raise ValueError('Invalid album track list.')
+    paths = [track['path'] for track in tracks]
+    if (len(paths)!=len(set(paths)) or
+            source_path not in paths or target_path not in paths):
+        raise ValueError('Drag must refer to two existing album tracks.')
+    if source_path == target_path:
+        return False
+    source_index = paths.index(source_path)
+    target_index = paths.index(target_path)
+    moved = tracks.pop(source_index)
+    tracks.insert(target_index, moved)
+    return True
+
+
 def album_summary(project):
     entries = []
     for idx, row in enumerate(project['tracks'], start=1):
