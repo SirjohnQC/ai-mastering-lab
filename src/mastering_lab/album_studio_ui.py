@@ -1062,7 +1062,7 @@ class AlbumStudioPage(QWidget):
         heading.setStyleSheet('font-size:23px;font-weight:750;background:transparent')
         top.addWidget(heading)
         top.addStretch()
-        self.label = QLabel('v0.26.6 · Stem Inspector + FX Advisor')
+        self.label = QLabel('v0.27.0 · JUCE Live Stem Lab')
         self.label.setStyleSheet('color:#afb4c9;background:transparent')
         top.addWidget(self.label)
         layout.addLayout(top)
@@ -1310,6 +1310,31 @@ class AlbumStudioPage(QWidget):
         track['stem_saturation']=dialog.selection
         track['status']='waiting'
         track['error']='Stem FX modifiés — relance Auto Produce pour un nouveau QC.'
+        self._intelligence_report=None
+        self.consistency_detail.clear()
+        self._save()
+        self._refresh()
+
+    def _live_fx_for(self, source):
+        if self._busy():
+            return
+        track=self._album_track_for_path(source)
+        if not track or track['kind']!='stems':
+            return
+        try:
+            from .live_stem_ui import LiveStemDialog
+            dialog=LiveStemDialog(self.root,track['path'],
+                                  track.get('stem_saturation'),self)
+        except (OSError,ValueError) as exc:
+            QMessageBox.warning(self,'FRANKENSTEM Live',str(exc))
+            return
+        if dialog.exec()!=QDialog.Accepted:
+            return
+        if dialog.selection==(track.get('stem_saturation') or {}):
+            return
+        track['stem_saturation']=dialog.selection
+        track['status']='waiting'
+        track['error']='Live FX approuvés — relance Auto Produce pour mastering QC.'
         self._intelligence_report=None
         self.consistency_detail.clear()
         self._save()
@@ -1740,6 +1765,10 @@ class AlbumStudioPage(QWidget):
                 fx_btn=QPushButton('⚡ FX Stems')
                 fx_btn.clicked.connect(lambda _, source=path: self._stem_fx_for(source))
                 line.addWidget(fx_btn)
+                live_btn=QPushButton('▶ Live FX')
+                live_btn.setToolTip('JUCE : écouter les stems et changer les effets en direct, sans WAV temporaire')
+                live_btn.clicked.connect(lambda _,source=path:self._live_fx_for(source))
+                line.addWidget(live_btn)
             drag_handle = AlbumDragHandle(self.track_list, card)
             line.addWidget(drag_handle)
             for text, cb in (('×', lambda _, n=i: self._remove(n)),):
