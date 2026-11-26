@@ -8,7 +8,8 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel,
     QPushButton, QLineEdit, QComboBox, QFileDialog, QMessageBox, QProgressBar, QScrollArea,
-    QListWidget, QListWidgetItem, QAbstractItemView, QApplication, QDialog, QSlider)
+    QListWidget, QListWidgetItem, QAbstractItemView, QApplication, QDialog, QSlider,
+    QCheckBox, QDoubleSpinBox, QDialogButtonBox)
 
 from .album_project import (empty_project, load_project, save_project,
                             add_entries, discover_album, album_summary, reorder_tracks, move_track_onto)
@@ -52,7 +53,8 @@ class AlbumBatchWorker(QThread):
                         result = master_stem_folder(row['path'], self.target, stop=self.stop_event,
                             progress=lambda message, completed=finished: self.stage.emit(completed, count, message),
                             reference_path=self.reference_path,
-                            external_reference_wav=self.external_reference_wav)
+                            external_reference_wav=self.external_reference_wav,
+                            stem_saturation=row.get('stem_saturation'))
                     else:
                         self.stage.emit(finished, count, 'Mastering : ' + row['title'])
                         result = rename_album_master(dict(master_song(row['path'], self.target, stop=self.stop_event)), row['title'])
@@ -643,6 +645,88 @@ class AlbumSelectableCard(QFrame):
             super().mousePressEvent(event)
 
 
+class StemSaturationDialog(QDialog):
+    """User-approved saturation of specific stems, never default-on."""
+
+    def __init__(self, folder, saved, parent=None):
+        super().__init__(parent)
+        from .stem_mixer import config_template
+        from .stem_saturation import suggestions, validated_selections
+        self.config=config_template(Path(folder))
+        self.saved=validated_selections(self.config,saved)
+        self.rows=[]
+        self.setWindowTitle('FRANKENSTEM · Stem Surgery')
+        self.setMinimumWidth(720)
+        root=QVBoxLayout(self)
+        intro=QLabel('Saturation avant le prémix — à activer séparément pour chaque stem. '
+                     'Suggestions heuristiques, pas détection d’artefacts IA.')
+        intro.setWordWrap(True)
+        root.addWidget(intro)
+        suggested=QPushButton('✦ Pré-sélectionner voix et basse (à confirmer)')
+        suggested.clicked.connect(self._select_safe_suggestions)
+        root.addWidget(suggested)
+        scroll=QScrollArea()
+        scroll.setWidgetResizable(True)
+        inner=QWidget()
+        content=QVBoxLayout(inner)
+        for advice in suggestions(self.config):
+            file=advice['file']
+            old=self.saved.get(file,{})
+            line=QHBoxLayout()
+            enabled=QCheckBox(Path(file).name)
+            enabled.setChecked(bool(old.get('enabled',False)))
+            line.addWidget(enabled,1)
+            style=QComboBox()
+            for name in ('tape','tube','softclip'):
+                style.addItem(name.title(),name)
+            style.setCurrentIndex(max(0,style.findData(old.get('style',advice['style']))))
+            line.addWidget(style)
+            drive=QDoubleSpinBox()
+            drive.setRange(.1,2.5)
+            drive.setSingleStep(.1)
+            drive.setValue(old.get('drive',advice['drive']))
+            drive.setPrefix('Drive ')
+            line.addWidget(drive)
+            wet=QDoubleSpinBox()
+            wet.setRange(1,40)
+            wet.setSuffix(' % Wet')
+            wet.setValue(old.get('mix',advice['mix'])*100)
+            line.addWidget(wet)
+            content.addLayout(line)
+            note=QLabel(advice['group']+' · '+advice['why'])
+            note.setWordWrap(True)
+            content.addWidget(note)
+            self.rows.append((file,enabled,style,drive,wet))
+        content.addStretch()
+        scroll.setWidget(inner)
+        root.addWidget(scroll,1)
+        buttons=QDialogButtonBox(QDialogButtonBox.Ok|QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self._validate_accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+    def _select_safe_suggestions(self):
+        from .auto_mix_candidates import _group
+        # Category-only starting points, never unreviewed automatic processing.
+        for file,enabled,style,drive,wet in self.rows:
+            if _group({'file':file}) in ('vocals','bass'):
+                enabled.setChecked(True)
+
+    def _validate_accept(self):
+        from .stem_saturation import validated_selections
+        selections={}
+        for file,enabled,style,drive,wet in self.rows:
+            if enabled.isChecked():
+                selections[file]={'enabled':True,'style':style.currentData(),
+                                  'drive':drive.value(),'mix':round(wet.value()/100,4)}
+        try:
+            self.selection=validated_selections(self.config,selections)
+        except ValueError as exc:
+            QMessageBox.warning(self,'Stem Surgery',str(exc))
+            return
+        self.accept()
+
+
 class AlbumStudioPage(QWidget):
     """Single guided album workspace that never overwrites individual song sources."""
     backRequested = Signal()
@@ -675,7 +759,7 @@ class AlbumStudioPage(QWidget):
         heading.setStyleSheet('font-size:23px;font-weight:750;background:transparent')
         top.addWidget(heading)
         top.addStretch()
-        self.label = QLabel('v0.26.4 · Creative Saturation')
+        self.label = QLabel('v0.26.5 · FRANKENSTEM Stem Surgery')
         self.label.setStyleSheet('color:#afb4c9;background:transparent')
         top.addWidget(self.label)
         layout.addLayout(top)
@@ -904,6 +988,29 @@ class AlbumStudioPage(QWidget):
         if track.get('status')!='qc_pass':
             return 'Référence sélectionnée : '+track['title']+' · stems/mixage en attente de master QC.'
         return 'Référence sélectionnée : '+track['title']+' · master QC disponible.'
+
+    def _stem_fx_for(self, source):
+        if self._busy():
+            return
+        track=self._album_track_for_path(source)
+        if track is None or track['kind']!='stems':
+            return
+        try:
+            dialog=StemSaturationDialog(track['path'],track.get('stem_saturation'),self)
+        except (OSError,ValueError) as exc:
+            QMessageBox.warning(self,'Stem Surgery',str(exc))
+            return
+        if dialog.exec()!=QDialog.Accepted:
+            return
+        if dialog.selection == (track.get('stem_saturation') or {}):
+            return
+        track['stem_saturation']=dialog.selection
+        track['status']='waiting'
+        track['error']='Stem FX modifiés — relance Auto Produce pour un nouveau QC.'
+        self._intelligence_report=None
+        self.consistency_detail.clear()
+        self._save()
+        self._refresh()
 
     def _recognize_existing(self):
         if self._busy():
@@ -1326,6 +1433,10 @@ class AlbumStudioPage(QWidget):
                 ab_track_button.clicked.connect(
                     lambda _, source=path: self._open_ab_for_song(source))
                 line.addWidget(ab_track_button)
+            if track['kind']=='stems':
+                fx_btn=QPushButton('⚡ FX Stems')
+                fx_btn.clicked.connect(lambda _, source=path: self._stem_fx_for(source))
+                line.addWidget(fx_btn)
             drag_handle = AlbumDragHandle(self.track_list, card)
             line.addWidget(drag_handle)
             for text, cb in (('×', lambda _, n=i: self._remove(n)),):

@@ -44,6 +44,11 @@ def can_reuse_master(row: dict, *, external_reference_wav=None) -> bool:
     if not saved:
         return False
     if row.get('kind') == 'stems':
+        from .stem_saturation import selection_signature
+        saved_sat=result.get('album_stem_saturation_signature','none')
+        requested_sat=selection_signature(row.get('stem_saturation'))
+        if saved_sat!=requested_sat:
+            return False
         # Do not reuse the old dry-only v0.15.1 result as a three-candidate job.
         if result.get('album_pipeline') != PIPELINE_ID:
             return False
@@ -77,7 +82,7 @@ def can_reuse_master(row: dict, *, external_reference_wav=None) -> bool:
 
 
 def master_stem_folder(folder, output_dir, *, stop=None, progress=None,
-                       render_mix_fn=None, master_fn=None, ai_decider=None, selection_fn=None, reference_path=None, external_reference_wav=None) -> dict:
+                       render_mix_fn=None, master_fn=None, ai_decider=None, selection_fn=None, reference_path=None, external_reference_wav=None, stem_saturation=None) -> dict:
     """Render dry A/B/C, select with bounded Hermes and master chosen candidate.
 
     No originals / saved stem configuration are modified. Cancellation between
@@ -88,6 +93,9 @@ def master_stem_folder(folder, output_dir, *, stop=None, progress=None,
     from .album_ai_brain import choose_configs
     from .album_mix_evaluation import choose_candidate
     from .auto_master import master_song, MasteringCancelled
+    from .stem_saturation import (
+        validated_selections, selection_signature, prepare_selected_stems
+    )
 
     folder = Path(folder).resolve()
     if not folder.is_dir():
@@ -98,10 +106,18 @@ def master_stem_folder(folder, output_dir, *, stop=None, progress=None,
     for track in config['tracks']:
         track['eq'] = False
         track['fx_chain'] = []
+    saturation_settings=validated_selections(config,stem_saturation)
+    saturation_signature=selection_signature(saturation_settings)
     signature = source_signature(folder, 'stems')
     output_dir = Path(output_dir).resolve()
     target_dir = output_dir / 'premixes' / (folder.name + '-' + hashlib.sha256(str(folder).encode()).hexdigest()[:10])
     target_dir.mkdir(parents=True, exist_ok=True)
+    prepared, saturation_report=prepare_selected_stems(
+        config,saturation_settings,target_dir/'saturated_stems',stop=stop
+    )
+    # The prepared, original-length wet prints enter the normal mixer before
+    # group gain decisions and before technical mastering. All three variants
+    # use the same user-approved selection, with no source-stem modification.
     mixes, ai_report = (ai_decider or choose_configs)(config)
     if progress:
         progress(f"{folder.name} : {'Hermes valide les gains' if ai_report.get('mode') == 'hermes' else 'variantes de secours (sans IA)'}")
@@ -114,7 +130,18 @@ def master_stem_folder(folder, output_dir, *, stop=None, progress=None,
         if progress:
             progress(f'{folder.name} : rendu {i}/3 — {name}')
         out = target_dir / f'{name}.wav'
-        reports[name] = fn(folder, mixes[name], out)
+        mix_config=mixes[name]
+        if prepared:
+            for key in prepared:
+                mix_config['tracks'][int(key)]['eq']=True
+                mix_config['tracks'][int(key)]['fx_chain']=[
+                    {'kind':'approved_stem_saturation'}]
+        if render_mix_fn is None:
+            reports[name]=fn(folder,mix_config,out,prepared=prepared)
+        else:
+            # Compatibility with test renderer injection: no kwarg when
+            # there is no approved stem saturation.
+            reports[name]=fn(folder,mix_config,out,prepared=prepared) if prepared else fn(folder,mix_config,out)
         if not out.is_file():
             raise RuntimeError(f'Mixeur : {name}.wav absent après rendu')
         rendered[name] = str(out)
@@ -142,6 +169,8 @@ def master_stem_folder(folder, output_dir, *, stop=None, progress=None,
         'album_candidate_reports': reports,
         'album_selected_candidate': selected,
         'album_pipeline': PIPELINE_ID,
+        'album_stem_saturation_signature':saturation_signature,
+        'album_stem_saturation':saturation_report,
         'album_external_reference_path': str(external_reference_wav) if external_reference_wav else None,
         'album_external_reference_signature': source_signature(external_reference_wav, 'stereo') if external_reference_wav else None,
         'album_reference_library_path': str(reference_path) if reference_path else None,
@@ -150,7 +179,7 @@ def master_stem_folder(folder, output_dir, *, stop=None, progress=None,
         'album_preference_signature': reference_signature(Path(reference_path).parent / 'mix_preferences.json') if reference_path else 'none',
         'album_ai_decisions': ai_report,
         'album_ai_selection': selection_report,
-        'album_warning': ('Les variantes utilisent des gains de groupes proposés par Hermes lorsque valides, sinon des gains de secours. Sans FX automatisés. '
+        'album_warning': ('Les variantes utilisent des gains de groupes proposés par Hermes lorsque valides, sinon des gains de secours. Saturation des stems uniquement avec approbation explicite. '
                           'Hermes peut sélectionner un mix d’après RMS, crêtes et dynamique mesurés, avec secours Balanced. '
                           'Ce classement ne remplace pas une écoute ni le QC technique du master.'),
     })
@@ -160,6 +189,7 @@ def master_stem_folder(folder, output_dir, *, stop=None, progress=None,
         'schema': 1, 'pipeline': PIPELINE_ID, 'source': str(folder),
         'source_signature': signature, 'selected': selected,
         'candidates': rendered, 'reports': reports, 'ai_decisions': ai_report,
+        'stem_saturation':saturation_report,
         'ai_selection': selection_report,
     }, ensure_ascii=False, indent=2, default=str), encoding='utf-8')
     result['album_candidates_manifest'] = str(manifest)

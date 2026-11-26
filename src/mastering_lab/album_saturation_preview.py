@@ -65,10 +65,10 @@ def process_saturation_wav(source, destination, *, style, drive, mix):
 
     validate_settings(style,drive,mix)
     with sf.SoundFile(str(source)) as read:
-        if read.channels!=2 or read.frames<=0:
-            raise ValueError('Saturation requires a nonempty stereo WAV.')
+        if read.channels not in (1,2) or read.frames<=0:
+            raise ValueError('Saturation requires a nonempty mono or stereo WAV.')
         with sf.SoundFile(str(destination),'w',samplerate=read.samplerate,
-                          channels=2,format='WAV',subtype='PCM_24') as write:
+                          channels=read.channels,format='WAV',subtype='PCM_24') as write:
             offset=0
             while offset<read.frames:
                 start=max(0,offset-OVERLAP)
@@ -89,7 +89,9 @@ def process_saturation_wav(source, destination, *, style, drive, mix):
                 combined=dry*(1.0-mix)+processed*mix
                 if not np.isfinite(combined).all():
                     raise ValueError('Saturation produced non-finite samples.')
-                write.write(np.clip(combined,-1.0,1.0))
+                if float(np.max(np.abs(combined))) >= 0.999:
+                    raise ValueError('Wet stem would clip: lower Drive or Wet Mix.')
+                write.write(combined)
                 offset+=length
 
 
