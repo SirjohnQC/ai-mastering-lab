@@ -75,7 +75,10 @@ public:
         stem->channels=(int)format->numChannels;
         stem->reader=std::make_unique<AudioFormatReaderSource>(format.release(), true);
         stem->buffered=std::make_unique<BufferingAudioSource>(
-            stem->reader.get(),readAhead,false,65536,stem->channels,true);
+            stem->reader.get(),readAhead,false,65536,stem->channels,false);
+        // prefillBufferOnPrepareToPlay=false: do NOT block the Windows
+        // audio-device startup for every stem while waiting on disk buffers.
+        // The read-ahead thread fills buffers asynchronously after prepare.
         stems.push_back(std::move(stem));
         return true;
     }
@@ -307,10 +310,19 @@ int main(int argc,char** argv) {
             }
         }
     }
-    reply(event("progress","Preparing streaming buffers"));
+    reply(event("progress","Attaching streaming audio source"));
+    std::fprintf(stderr,"[LIVE STARTUP] before player.setSource\\n");
+    std::fflush(stderr);
     AudioSourcePlayer player;
     player.setSource(&mixer);
+    std::fprintf(stderr,"[LIVE STARTUP] after player.setSource\\n");
+    std::fflush(stderr);
+    reply(event("progress","Starting JUCE audio callback"));
+    std::fprintf(stderr,"[LIVE STARTUP] before devices.addAudioCallback\\n");
+    std::fflush(stderr);
     devices.addAudioCallback(&player);
+    std::fprintf(stderr,"[LIVE STARTUP] after devices.addAudioCallback\\n");
+    std::fflush(stderr);
     {
         auto* msg=new DynamicObject();
         msg->setProperty("status","ready");
@@ -334,8 +346,13 @@ int main(int argc,char** argv) {
         if (!mixer.command(payload,error)) reply(event("error",error));
         else reply(mixer.status());
     }
+    std::fprintf(stderr,"[LIVE STOP] disconnecting device callback\\n");
+    std::fflush(stderr);
     devices.removeAudioCallback(&player);
     player.setSource(nullptr);
+    // Release buffer references before stopping the disk-read thread;
+    // no reader is accessed by a stopped read-ahead worker.
+    mixer.releaseResources();
     thread.stopThread(2000);
     return 0;
 }
