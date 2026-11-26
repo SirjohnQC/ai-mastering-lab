@@ -20,11 +20,12 @@ class AlbumBatchWorker(QThread):
     stage = Signal(int, int, str)          # number finished, total, message
     done = Signal(bool)                   # cancelled
 
-    def __init__(self, entries, target, parent=None, *, reference_path=None):
+    def __init__(self, entries, target, parent=None, *, reference_path=None, external_reference_wav=None):
         super().__init__(parent)
         self.entries = entries
         self.target = Path(target)
         self.reference_path = reference_path
+        self.external_reference_wav = external_reference_wav
         self.stop_event = threading.Event()
 
     def cancel(self):
@@ -48,7 +49,8 @@ class AlbumBatchWorker(QThread):
                     if row['kind'] == 'stems':
                         result = master_stem_folder(row['path'], self.target, stop=self.stop_event,
                             progress=lambda message, completed=finished: self.stage.emit(completed, count, message),
-                            reference_path=self.reference_path)
+                            reference_path=self.reference_path,
+                            external_reference_wav=self.external_reference_wav)
                     else:
                         self.stage.emit(finished, count, 'Mastering : ' + row['title'])
                         result = rename_album_master(dict(master_song(row['path'], self.target, stop=self.stop_event)), row['title'])
@@ -91,16 +93,18 @@ class AlbumIntelligenceWorker(QThread):
     completed = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, project, reference_index, parent=None):
+    def __init__(self, project, reference_index, parent=None, *, external_reference_wav=None):
         super().__init__(parent)
         self.project_snapshot = json.loads(json.dumps(project))
         self.reference_index = reference_index
+        self.external_reference_wav = external_reference_wav
 
     def run(self):
         from .album_intelligence import compare_album
         try:
             self.completed.emit(compare_album(
-                self.project_snapshot, reference_index=self.reference_index))
+                self.project_snapshot, reference_index=self.reference_index,
+                external_reference_wav=self.external_reference_wav))
         except Exception as exc:
             self.failed.emit(f'{type(exc).__name__}: {exc}')
 
@@ -123,6 +127,7 @@ class AlbumStudioPage(QWidget):
             self.project = empty_project()
         self._build()
         self._refresh()
+        self._update_external_reference_display()
 
     def _build(self):
         layout = QVBoxLayout(self)
@@ -136,7 +141,7 @@ class AlbumStudioPage(QWidget):
         heading.setStyleSheet('font-size:23px;font-weight:750;background:transparent')
         top.addWidget(heading)
         top.addStretch()
-        self.label = QLabel('v0.25.2 · Smart Master Import')
+        self.label = QLabel('v0.25.3 · Standalone Album WAV Reference')
         self.label.setStyleSheet('color:#afb4c9;background:transparent')
         top.addWidget(self.label)
         layout.addLayout(top)
@@ -167,8 +172,26 @@ class AlbumStudioPage(QWidget):
         self.recognition_status.setWordWrap(True)
         self.recognition_status.setStyleSheet('color:#aebbd1;font-size:11px;')
         layout.addWidget(self.recognition_status)
+        # Independent WAV reference, NOT an album song to process.
+        external_row = QHBoxLayout()
+        self.external_reference_label = QLabel('WAV de référence indépendant : aucun')
+        self.external_reference_label.setWordWrap(True)
+        external_row.addWidget(self.external_reference_label,1)
+        self.external_ref_select = QPushButton('♫ Choisir WAV de référence')
+        self.external_ref_select.clicked.connect(self._choose_external_reference)
+        external_row.addWidget(self.external_ref_select)
+        self.external_ref_clear = QPushButton('× Retirer')
+        self.external_ref_clear.clicked.connect(self._clear_external_reference)
+        external_row.addWidget(self.external_ref_clear)
+        layout.addLayout(external_row)
+        self.reference_hint = QLabel(
+            'Ce WAV sert à guider le choix du prémix puis à comparer les masters finaux. '
+            'Il n’est pas ajouté aux pistes de l’album et ne sera jamais remasterisé.')
+        self.reference_hint.setWordWrap(True)
+        self.reference_hint.setStyleSheet('color:#aebbd1;font-size:11px;')
+        layout.addWidget(self.reference_hint)
         reference_row = QHBoxLayout()
-        reference_caption = QLabel('Référence d’album (master QC) :')
+        reference_caption = QLabel('Alternative : master QC déjà dans l’album :')
         reference_row.addWidget(reference_caption)
         self.reference_picker = QComboBox()
         self.reference_picker.setToolTip('Ton propre master validé sert à comparer l’album. Distinct des références musicales de Reference Learning.')
@@ -277,6 +300,56 @@ class AlbumStudioPage(QWidget):
         self._recognition_worker=None
         self._refresh()
 
+    def _external_reference(self):
+        raw = self.project.get('external_reference_wav')
+        if not raw:
+            return None
+        try:
+            from .album_external_reference import validate_external_reference
+            return validate_external_reference(raw)
+        except (OSError,ValueError):
+            return None
+
+    def _update_external_reference_display(self):
+        ref=self._external_reference()
+        if ref:
+            self.external_reference_label.setText('WAV de référence : '+ref.name)
+            self.external_ref_clear.setEnabled(not self._busy())
+        else:
+            self.external_reference_label.setText('WAV de référence indépendant : aucun')
+            self.external_ref_clear.setEnabled(False)
+        self.external_ref_select.setEnabled(not self._busy())
+        self.compare_album_btn.setEnabled(
+            not self._busy() and (ref is not None or self.reference_picker.currentData() is not None))
+
+    def _choose_external_reference(self):
+        if self._busy():
+            return
+        selected,_=QFileDialog.getOpenFileName(
+            self,'Choisir un WAV de référence indépendant','','Stereo WAV (*.wav)')
+        if not selected:
+            return
+        try:
+            from .album_external_reference import validate_external_reference
+            path=validate_external_reference(selected)
+        except (OSError,ValueError) as exc:
+            QMessageBox.warning(self,'Référence WAV',str(exc))
+            return
+        self.project['external_reference_wav']=str(path)
+        self._save()
+        self._intelligence_report=None
+        self.consistency_detail.clear()
+        self._update_external_reference_display()
+
+    def _clear_external_reference(self):
+        if self._busy():
+            return
+        self.project.pop('external_reference_wav',None)
+        self._save()
+        self._intelligence_report=None
+        self.consistency_detail.clear()
+        self._update_external_reference_display()
+
     def _refresh_reference_picker(self):
         tracks = self.project['tracks']
         selected_path = self.project.get('reference_source')
@@ -298,8 +371,7 @@ class AlbumStudioPage(QWidget):
             if available and track['path'] == selected_path:
                 self.reference_picker.setCurrentIndex(self.reference_picker.count()-1)
         self.reference_picker.blockSignals(False)
-        self.compare_album_btn.setEnabled(
-            self.reference_picker.currentData() is not None and not self._busy())
+        self._update_external_reference_display()
 
     def _reference_changed(self, _):
         if self._busy():
@@ -309,18 +381,21 @@ class AlbumStudioPage(QWidget):
         self._save()
         self._intelligence_report = None
         self.consistency_detail.clear()
-        self.compare_album_btn.setEnabled(bool(choice))
+        self._update_external_reference_display()
 
     def _analyze_album(self):
         if self._busy():
             return
         choice = self.reference_picker.currentData()
-        if choice is None:
+        external = self._external_reference()
+        if external is None and choice is None:
             QMessageBox.information(self,'Album Intelligence',
-                                    'Choisis une chanson dont le master a réussi le QC.')
+                                    'Choisis un WAV indépendant ou un master QC validé.')
             return
         self._save_title()
-        worker = AlbumIntelligenceWorker(self.project, choice[0], self)
+        worker = AlbumIntelligenceWorker(
+            self.project, choice[0] if choice and external is None else None, self,
+            external_reference_wav=str(external) if external else None)
         self._intelligence_worker = worker
         worker.completed.connect(self._album_analyzed)
         worker.failed.connect(self._album_analysis_failed)
@@ -529,8 +604,11 @@ class AlbumStudioPage(QWidget):
             QMessageBox.information(self, 'Album vide', 'Ajoute au moins une chanson pour commencer.')
             return
         from .reference_learning import library_path
-        self._worker = AlbumBatchWorker(rows, self.export_dir, self,
-                                       reference_path=library_path(self.root))
+        external = self._external_reference()
+        self._worker = AlbumBatchWorker(
+            rows, self.export_dir, self,
+            reference_path=library_path(self.root),
+            external_reference_wav=str(external) if external else None)
         self._worker.item.connect(self._item_result)
         self._worker.stage.connect(self._progress)
         self._worker.done.connect(self._done)
