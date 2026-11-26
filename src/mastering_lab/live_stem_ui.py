@@ -142,10 +142,15 @@ class LiveStemDialog(QDialog):
         self.process.start()
 
     def _ended(self):
+        was_ready=self.ready
         self.ready=False
         self.poll.stop()
         for item in self.controls: item.setEnabled(False)
         self.buttons.button(QDialogButtonBox.Save).setEnabled(False)
+        if was_ready and self.isVisible():
+            self.state.setText(
+                '⚠ Le moteur audio JUCE est fermé. '
+                'Rouvre Live FX pour repartir une session propre.')
 
     def _stderr(self):
         # Only show errors, never flood the UI from the audio callback.
