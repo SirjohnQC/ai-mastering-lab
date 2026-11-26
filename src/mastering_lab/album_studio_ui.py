@@ -409,7 +409,7 @@ class AlbumStudioPage(QWidget):
         heading.setStyleSheet('font-size:23px;font-weight:750;background:transparent')
         top.addWidget(heading)
         top.addStretch()
-        self.label = QLabel('v0.25.6 · Album A/B Preview')
+        self.label = QLabel('v0.25.7 · Reference & Album Layout')
         self.label.setStyleSheet('color:#afb4c9;background:transparent')
         top.addWidget(self.label)
         layout.addLayout(top)
@@ -462,14 +462,14 @@ class AlbumStudioPage(QWidget):
         reference_caption = QLabel('Alternative : master QC déjà dans l’album :')
         reference_row.addWidget(reference_caption)
         self.reference_picker = QComboBox()
-        self.reference_picker.setToolTip('Ton propre master validé sert à comparer l’album. Distinct des références musicales de Reference Learning.')
+        self.reference_picker.setToolTip('Choisis une chanson, même si ses stems sont en attente. Le QC reste nécessaire avant la comparaison audio.')
         self.reference_picker.currentIndexChanged.connect(self._reference_changed)
         reference_row.addWidget(self.reference_picker, 1)
         self.compare_album_btn = QPushButton('✦ Analyser la cohérence')
         self.compare_album_btn.clicked.connect(self._analyze_album)
         reference_row.addWidget(self.compare_album_btn)
         layout.addLayout(reference_row)
-        self.consistency_status = QLabel('Choisis une référence avec un master QC validé.')
+        self.consistency_status = QLabel('Choisis un WAV externe ou une chanson du projet. La comparaison exige ensuite des masters QC.')
         self.consistency_status.setWordWrap(True)
         self.consistency_status.setStyleSheet('color:#bac5de;background:transparent;font-size:12px;')
         layout.addWidget(self.consistency_status)
@@ -482,7 +482,13 @@ class AlbumStudioPage(QWidget):
         self.consistency_detail.setWordWrap(True)
         self.consistency_detail.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.consistency_detail.setStyleSheet('color:#aebbd1;background:transparent;font-size:11px;')
+        self.consistency_detail.setMaximumHeight(88)
         layout.addWidget(self.consistency_detail)
+        self.more_results_btn=QPushButton('Afficher tous les détails de l’analyse')
+        self.more_results_btn.setCheckable(True)
+        self.more_results_btn.toggled.connect(self._toggle_results)
+        self.more_results_btn.hide()
+        layout.addWidget(self.more_results_btn)
         self.ab_button=QPushButton('♫ Écouter Original / Ajusté (A/B)')
         self.ab_button.setToolTip('Choisis une chanson de la liste après analyse pour préparer un aperçu non destructif.')
         self.ab_button.clicked.connect(self._open_ab)
@@ -505,7 +511,8 @@ class AlbumStudioPage(QWidget):
         self.track_list.orderRequested.connect(self._on_song_card_drop)
         self.track_list.currentItemChanged.connect(self._update_ab_button)
         self.track_list.model().rowsMoved.connect(self._schedule_track_reorder)
-        layout.addWidget(self.track_list, 1)
+        self.track_list.setMinimumHeight(280)
+        layout.addWidget(self.track_list, 3)
         self.progress_text = QLabel('Prêt à organiser ton album.')
         self.progress_text.setStyleSheet('background:transparent;color:#b8c4de')
         layout.addWidget(self.progress_text)
@@ -566,6 +573,36 @@ class AlbumStudioPage(QWidget):
             dlg=AlbumABDialog(result['file'],analysis,self.export_dir/'ab_previews',self)
             dlg.exec()
             return
+
+    def _toggle_results(self, expanded):
+        self.consistency_detail.setMaximumHeight(16777215 if expanded else 88)
+        self.more_results_btn.setText(
+            'Réduire les détails de l’analyse' if expanded
+            else 'Afficher tous les détails de l’analyse')
+
+    def _reference_mode(self):
+        mode=self.project.get('album_reference_mode')
+        if mode in ('external','album'):
+            return mode
+        # Migrated projects: a standalone reference used to take priority.
+        return 'external' if self.project.get('external_reference_wav') else 'album'
+
+    def _reference_message(self):
+        mode=self._reference_mode()
+        if mode=='external':
+            external=self._external_reference()
+            if external:
+                return 'Référence active : WAV externe — '+external.name
+            return '⚠ Référence externe indisponible. Choisis un WAV valide.'
+        choice=self.reference_picker.currentData()
+        if choice is None:
+            return 'Choisis une chanson du projet ou un WAV externe.'
+        track=next((t for t in self.project['tracks'] if t['path']==choice[1]), None)
+        if track is None:
+            return 'Référence de l’album introuvable.'
+        if track.get('status')!='qc_pass':
+            return 'Référence sélectionnée : '+track['title']+' · stems/mixage en attente de master QC.'
+        return 'Référence sélectionnée : '+track['title']+' · master QC disponible.'
 
     def _recognize_existing(self):
         if self._busy():
@@ -631,8 +668,20 @@ class AlbumStudioPage(QWidget):
             self.external_ref_clear.setEnabled(
                 bool(self.project.get('external_reference_wav')) and not self._busy())
         self.external_ref_select.setEnabled(not self._busy())
-        self.compare_album_btn.setEnabled(
-            not self._busy() and (ref is not None or self.reference_picker.currentData() is not None))
+        choice=self.reference_picker.currentData()
+        active_external=(self._reference_mode()=='external')
+        album_ok=False
+        if choice is not None:
+            track=next((x for x in self.project['tracks'] if x['path']==choice[1]),None)
+            result=(track or {}).get('result') or {}
+            album_ok=bool(track and track.get('status')=='qc_pass'
+                          and result.get('status')=='qc_pass'
+                          and Path(result.get('file') or '').is_file())
+        ready=(ref is not None) if active_external else album_ok
+        self.compare_album_btn.setEnabled(ready and not self._busy()
+                                           and any(t.get('status')=='qc_pass' for t in self.project['tracks']))
+        if self._intelligence_report is None:
+            self.consistency_status.setText(self._reference_message())
 
     def _choose_external_reference(self):
         if self._busy():
@@ -648,18 +697,24 @@ class AlbumStudioPage(QWidget):
             QMessageBox.warning(self,'Référence WAV',str(exc))
             return
         self.project['external_reference_wav']=str(path)
+        self.project['album_reference_mode']='external'
         self._save()
         self._intelligence_report=None
         self.consistency_detail.clear()
+        self.more_results_btn.hide()
+        self._update_ab_button()
         self._update_external_reference_display()
 
     def _clear_external_reference(self):
         if self._busy():
             return
         self.project.pop('external_reference_wav',None)
+        self.project['album_reference_mode']='album'
         self._save()
         self._intelligence_report=None
         self.consistency_detail.clear()
+        self.more_results_btn.hide()
+        self._update_ab_button()
         self._update_external_reference_display()
 
     def _refresh_reference_picker(self):
@@ -674,13 +729,12 @@ class AlbumStudioPage(QWidget):
                          and result.get('status') == 'qc_pass'
                          and isinstance(result.get('file'), str)
                          and Path(result['file']).is_file())
+            # Always selectable: the selection is a plan for the future
+            # master even while stems are waiting. QC gates analysis, not choice.
             self.reference_picker.addItem(
-                track.get('title','') + ('' if available else ' · QC requis'),
-                (i, track['path']) if available else None)
-            if not available:
-                item_index = self.reference_picker.count()-1
-                self.reference_picker.model().item(item_index).setEnabled(False)
-            if available and track['path'] == selected_path:
+                track.get('title','') + ('' if available else ' · à produire'),
+                (i, track['path']))
+            if track['path'] == selected_path:
                 self.reference_picker.setCurrentIndex(self.reference_picker.count()-1)
         self.reference_picker.blockSignals(False)
         self._update_external_reference_display()
@@ -690,25 +744,36 @@ class AlbumStudioPage(QWidget):
             return
         choice = self.reference_picker.currentData()
         self.project['reference_source'] = choice[1] if choice else None
+        if choice is not None:
+            self.project['album_reference_mode']='album'
         self._save()
         self._intelligence_report = None
         self.consistency_detail.clear()
+        self.more_results_btn.hide()
         self._update_external_reference_display()
 
     def _analyze_album(self):
         if self._busy():
             return
         choice = self.reference_picker.currentData()
-        external = self._external_reference()
-        if self.project.get('external_reference_wav') and external is None:
+        external = self._external_reference() if self._reference_mode()=='external' else None
+        if self._reference_mode()=='external' and self.project.get('external_reference_wav') and external is None:
             QMessageBox.warning(self, 'Référence WAV',
                 'Le WAV de référence enregistré est introuvable ou invalide. '
                 'Choisis un autre WAV ou retire cette référence.')
             return
-        if external is None and choice is None:
-            QMessageBox.information(self,'Album Intelligence',
-                                    'Choisis un WAV indépendant ou un master QC validé.')
-            return
+        if external is None:
+            if choice is None:
+                QMessageBox.information(self,'Album Intelligence',
+                                        'Choisis un WAV indépendant ou une chanson.')
+                return
+            row=self.project['tracks'][choice[0]]
+            result=row.get('result') or {}
+            if row.get('status')!='qc_pass' or result.get('status')!='qc_pass':
+                QMessageBox.information(self,'Album Intelligence',
+                    'La chanson est sélectionnée, mais son master QC n’est pas encore prêt. '
+                    'Produis-la avant l’analyse.')
+                return
         self._save_title()
         worker = AlbumIntelligenceWorker(
             self.project, choice[0] if choice and external is None else None, self,
@@ -757,9 +822,11 @@ class AlbumStudioPage(QWidget):
         items = report['tracks']
         measured = sum(r['status'] in ('reference','measured') for r in items)
         flagged = sum(bool(r.get('flags')) for r in items)
-        self.consistency_status.setText(
-            f'Référence : {report["reference_title"]} · '
-            f'{measured}/{len(items)} masters analysés · {flagged} piste(s) à écouter')
+        summary=(f'Référence : {report["reference_title"]} · '
+                 f'{measured}/{len(items)} masters analysés · {flagged} piste(s) à écouter')
+        if measured==0:
+            summary += ' · Lance AUTO PRODUCE ALBUM pour créer les masters QC.'
+        self.consistency_status.setText(summary)
         lines = []
         for row in items:
             flags = row.get('flags',[])
@@ -777,6 +844,12 @@ class AlbumStudioPage(QWidget):
             lines.append(f'{row["index"]+1:02d}. {row["title"]}: {info}'
                          + ('\n    ↳ ' + suggestion if suggestion else ''))
         self.consistency_detail.setText('\n'.join(lines))
+        self.more_results_btn.setVisible(len(lines)>2 and measured>0)
+        self.more_results_btn.setChecked(False)
+        if measured==0:
+            self.consistency_detail.setText(
+                f'{len(items)} chanson(s) en attente de master QC. '
+                'Elles sont bien importées : lance Auto Produce Album.')
 
 
 
@@ -978,12 +1051,26 @@ class AlbumStudioPage(QWidget):
             QMessageBox.information(self, 'Album vide', 'Ajoute au moins une chanson pour commencer.')
             return
         from .reference_learning import library_path
-        external = self._external_reference()
-        if self.project.get('external_reference_wav') and external is None:
+        external = self._external_reference() if self._reference_mode()=='external' else None
+        if self._reference_mode()=='external' and self.project.get('external_reference_wav') and external is None:
             QMessageBox.warning(self, 'Référence WAV',
                 'Le WAV de référence est manquant ou invalide. '
                 'Change la référence avant Auto Produce Album.')
             return
+        if self._reference_mode()=='album':
+            choice=self.reference_picker.currentData()
+            if choice is not None:
+                row=next((x for x in self.project['tracks'] if x['path']==choice[1]),None)
+                result=(row or {}).get('result') or {}
+                candidate=result.get('file')
+                if (row is not None and row.get('status')=='qc_pass'
+                        and result.get('status')=='qc_pass' and candidate
+                        and Path(candidate).is_file()):
+                    external=Path(candidate)
+                else:
+                    self.progress_text.setText(
+                        'Référence d’album sélectionnée, mais master QC en attente : '
+                        'prémix guidé par les préférences habituelles.')
         self._worker = AlbumBatchWorker(
             rows, self.export_dir, self,
             reference_path=library_path(self.root),
