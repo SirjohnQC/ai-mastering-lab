@@ -7,7 +7,7 @@ import shutil
 import re
 import threading
 from pathlib import Path
-from PySide6.QtCore import Qt, QTimer, Signal, QThread
+from PySide6.QtCore import Qt, QTimer, Signal, QThread, QUrl, QProcess
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QFrame, QStackedWidget, QSlider, QMessageBox,
     QFileDialog, QProgressBar, QCheckBox, QSizePolicy, QScrollArea, QLineEdit, QDialog, QTextEdit, QApplication)
@@ -273,6 +273,58 @@ class AutoStudioPage(QWidget):
             action = menu.addAction('Plugin Calibration — Pro-C 3…')
             action.setObjectName('proC3CalibrationAction')
             action.triggered.connect(self._show_calibration_tools)
+        if not any(action.objectName() == 'autoMixCleanupAction' for action in menu.actions()):
+            action = menu.addAction('Auto Mix Cleanup…')
+            action.setObjectName('autoMixCleanupAction')
+            action.triggered.connect(self._cleanup_old_mixes)
+
+    def _cleanup_old_mixes(self):
+        if not self.stems.config:
+            QMessageBox.information(self, 'Auto Mix Cleanup', 'Load the song stems first.')
+            return
+        if (not self._can_change_music() or self.stems.job.state() != QProcess.NotRunning
+                or self._fx_worker is not None
+                or (self._album_page is not None and self._album_page._busy())):
+            return
+        from datetime import datetime
+        from PySide6.QtGui import QDesktopServices
+        from .mix_cleanup import superseded_sessions, archive_superseded
+
+        auto_mix = self.stems.cache_path() / 'auto_mix'
+        protected = [self._current_source, self._master_input, self.stems._latest_comparison,
+                     self._fx_source]
+        if self._player is not None:
+            protected.extend(self._player.paths.values())
+        try:
+            candidates = superseded_sessions(auto_mix, self.root, protected_paths=protected)
+            if not candidates:
+                QMessageBox.information(self, 'Auto Mix Cleanup',
+                                        'No superseded mixes found for the loaded stems.')
+                return
+            dialog = QMessageBox(self)
+            dialog.setWindowTitle('Auto Mix Cleanup')
+            dialog.setText(f'Archive {len(candidates)} older Auto Mix session(s)?')
+            dialog.setInformativeText(
+                'The newest complete render for each stem selection and linked mixes stay in place. '
+                'You can restore archived sessions by moving their folders back beside auto_mix’s other sessions.')
+            dialog.setDetailedText('\n'.join(
+                f"{datetime.fromtimestamp(stamp / 1e9):%Y-%m-%d %H:%M}  ·  {folder.name}"
+                for stamp, folder in candidates))
+            archive = dialog.addButton('Archive older mixes', QMessageBox.AcceptRole)
+            dialog.addButton(QMessageBox.Cancel)
+            dialog.exec()
+            if dialog.clickedButton() is not archive:
+                return
+            moved, errors = archive_superseded(auto_mix, self.root, candidates,
+                                              protected_paths=protected)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, 'Auto Mix Cleanup', str(exc))
+            return
+        if errors:
+            QMessageBox.warning(self, 'Auto Mix Cleanup',
+                                f'{len(moved)} session(s) archived.\n' + '\n'.join(errors))
+        if moved:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(moved[0].parent)))
 
     def _set_fx_status(self, message):
         """Update the AI FX status and the detached calibration dialog safely."""
