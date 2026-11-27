@@ -33,9 +33,11 @@ def source_signature(path: str | Path, kind: str) -> str:
     return hashlib.sha256(json.dumps(pieces, ensure_ascii=False).encode('utf-8')).hexdigest()
 
 
-def can_reuse_master(row: dict, *, external_reference_wav=None, corrective_eq=False) -> bool:
+def can_reuse_master(row: dict, *, external_reference_wav=None, corrective_eq=False, auto_cleanup=False) -> bool:
     result = row.get('result') or {}
     if row.get('status') != 'qc_pass' or result.get('status') != 'qc_pass':
+        return False
+    if result.get('album_auto_cleanup_enabled', False) != auto_cleanup:
         return False
     if bool(result.get('album_corrective_eq')) != bool(corrective_eq):
         return False
@@ -122,8 +124,37 @@ def master_album_with_eq(source, output_dir, *, root, plugin, reference_path=Non
     return result
 
 
+def master_album_stereo(source, output_dir, *, master, stop=None, progress=None,
+                        auto_cleanup=False):
+    source = Path(source).resolve()
+    signature = source_signature(source, 'stereo')
+    applied = {}
+    mastering_input = source
+    if auto_cleanup:
+        from .de_sizzle import auto_sizzle_passages, prepare_de_sizzle
+
+        if progress:
+            progress('Analyse des aigus · ' + source.stem)
+        passages = auto_sizzle_passages(source, stop=stop)
+        if passages:
+            applied = {str(source): passages}
+            if progress:
+                progress('Correction des aigus · ' + source.stem)
+            folder = Path(output_dir) / 'premixes' / ('stereo-' + signature[:16])
+            folder.mkdir(parents=True, exist_ok=True)
+            prepared = {}
+            prepare_de_sizzle({'tracks': [{'file': str(source)}]}, applied, prepared, folder, stop=stop)
+            mastering_input = prepared['0']
+    if progress:
+        progress('Mastering · ' + source.stem)
+    result = dict(master(mastering_input, output_dir, stop=stop))
+    result.update(album_source_signature=signature, album_auto_cleanup_enabled=auto_cleanup,
+                  album_auto_de_sizzle=applied)
+    return result
+
+
 def master_stem_folder(folder, output_dir, *, stop=None, progress=None,
-                       render_mix_fn=None, master_fn=None, ai_decider=None, selection_fn=None, reference_path=None, external_reference_wav=None, stem_saturation=None, de_sizzle=None) -> dict:
+                       render_mix_fn=None, master_fn=None, ai_decider=None, selection_fn=None, reference_path=None, external_reference_wav=None, stem_saturation=None, de_sizzle=None, auto_cleanup=False) -> dict:
     """Render dry A/B/C, select with bounded Hermes and master chosen candidate.
 
     No originals / saved stem configuration are modified. Cancellation between
@@ -147,6 +178,14 @@ def master_stem_folder(folder, output_dir, *, stop=None, progress=None,
     for track in config['tracks']:
         track['eq'] = False
         track['fx_chain'] = []
+    automatic = {}
+    if auto_cleanup:
+        from .de_sizzle import auto_stem_sizzle
+
+        automatic = auto_stem_sizzle(config, de_sizzle or {}, stop=stop, progress=progress)
+    repairs = {**automatic, **(de_sizzle or {})}
+    if progress:
+        progress(f'{folder.name} : préparation des corrections')
     saturation_settings=validated_selections(config,stem_saturation)
     saturation_signature=selection_signature(saturation_settings)
     signature = source_signature(folder, 'stems')
@@ -156,10 +195,10 @@ def master_stem_folder(folder, output_dir, *, stop=None, progress=None,
     prepared, saturation_report=prepare_selected_stems(
         config,saturation_settings,target_dir/'saturated_stems',stop=stop
     )
-    if de_sizzle:
+    if repairs:
         from .de_sizzle import prepare_de_sizzle
 
-        prepare_de_sizzle(config, de_sizzle, prepared, target_dir, stop=stop)
+        prepare_de_sizzle(config, repairs, prepared, target_dir, stop=stop)
     # The prepared, original-length wet prints enter the normal mixer before
     # group gain decisions and before technical mastering. All three variants
     # use the same user-approved selection, with no source-stem modification.
@@ -185,6 +224,8 @@ def master_stem_folder(folder, output_dir, *, stop=None, progress=None,
                     track['fx_chain'].append({'kind': 'approved_stem_saturation'})
                 if track['file'] in (de_sizzle or {}):
                     track['fx_chain'].append({'kind': 'approved_de_sizzle'})
+                elif track['file'] in automatic:
+                    track['fx_chain'].append({'kind': 'automatic_de_sizzle'})
         if render_mix_fn is None:
             reports[name]=fn(folder,mix_config,out,prepared=prepared)
         else:
@@ -221,6 +262,8 @@ def master_stem_folder(folder, output_dir, *, stop=None, progress=None,
         'album_stem_saturation_signature':saturation_signature,
         'album_stem_saturation':saturation_report,
         'album_stem_de_sizzle': de_sizzle or {},
+        'album_auto_cleanup_enabled': auto_cleanup,
+        'album_auto_de_sizzle': automatic,
         'album_external_reference_path': str(external_reference_wav) if external_reference_wav else None,
         'album_external_reference_signature': source_signature(external_reference_wav, 'stereo') if external_reference_wav else None,
         'album_reference_library_path': str(reference_path) if reference_path else None,
@@ -241,6 +284,7 @@ def master_stem_folder(folder, output_dir, *, stop=None, progress=None,
         'candidates': rendered, 'reports': reports, 'ai_decisions': ai_report,
         'stem_saturation':saturation_report,
         'stem_de_sizzle': de_sizzle or {},
+        'auto_de_sizzle': automatic,
         'ai_selection': selection_report,
     }, ensure_ascii=False, indent=2, default=str), encoding='utf-8')
     result['album_candidates_manifest'] = str(manifest)

@@ -10,7 +10,7 @@ CENTER_HZ = 7500
 MAX_PASSAGES = 12
 
 
-def scan_sizzle(path, *, cancelled=lambda: False):
+def scan_sizzle(path, *, cancelled=lambda: False, conservative=False):
     """Flag sustained, noise-like bright passages after their initial attack."""
     size = 2048
     markers = []
@@ -27,6 +27,8 @@ def scan_sizzle(path, *, cancelled=lambda: False):
         b, a = _coefficients(rate)
         _, response = freqz(b, a, worN=2 * np.pi * hz / rate)
         response_power = abs(response[:, None]) ** 2
+        ratio, flatness_floor, power_floor = ((1.8, 0.42, 0.10) if conservative
+                                                else (0.55, 0.24, 0.04))
         for frame, block in enumerate(audio.blocks(blocksize=size, dtype='float32', always_2d=True)):
             if cancelled():
                 return []
@@ -36,8 +38,8 @@ def scan_sizzle(path, *, cancelled=lambda: False):
             treble = power[high]
             mean = treble.mean(axis=0)
             flatness = np.exp(np.log(treble + 1e-12).mean(axis=0)) / (mean + 1e-12)
-            loud = treble.sum(axis=0) >= 0.55 * power[presence].sum(axis=0)
-            flagged = np.any(loud & (flatness > 0.24) & (mean > 0.04))
+            loud = treble.sum(axis=0) >= ratio * power[presence].sum(axis=0)
+            flagged = np.any(loud & (flatness > flatness_floor) & (mean > power_floor))
             if flagged:
                 # Skip the first frame (attack) in both correction and matching.
                 if run:
@@ -52,6 +54,38 @@ def scan_sizzle(path, *, cancelled=lambda: False):
             _append(markers, audio.frames // size, run, size / rate, dry_energy, wet_energy)
     return sorted(sorted(markers, key=lambda m: m['end'] - m['start'], reverse=True)[:MAX_PASSAGES],
                   key=lambda m: m['start'])
+
+
+def auto_sizzle_passages(path, *, stop=None):
+    """Apply only isolated, high-confidence bursts in an automatic run."""
+    from .auto_master import MasteringCancelled
+
+    cancelled = stop.is_set if stop is not None else lambda: False
+    markers = scan_sizzle(path, cancelled=cancelled, conservative=True)
+    if cancelled():
+        raise MasteringCancelled('Analyse des aigus annulée.')
+    eligible = [m for m in markers if 0.24 <= m['end'] - m['start'] <= 1.5]
+    return eligible[:3]
+
+
+def auto_stem_sizzle(config, manual, *, stop=None, progress=None):
+    from .auto_mix_candidates import _group
+
+    selected = {}
+    for track in config['tracks']:
+        source = track['file']
+        if source in manual:
+            continue
+        name = Path(source).stem.casefold()
+        if _group(track) != 'vocals' and not any(label in name for label in
+                                                 ('cymbal', 'hi-hat', 'hihat', 'hi hat')):
+            continue
+        if progress:
+            progress('Analyse des aigus · ' + Path(source).name)
+        passages = auto_sizzle_passages(source, stop=stop)
+        if passages:
+            selected[source] = passages
+    return selected
 
 
 def _append(markers, end, run, step, dry, wet):

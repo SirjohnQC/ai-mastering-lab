@@ -41,10 +41,11 @@ class AlbumBatchWorker(QThread):
     stage = Signal(int, int, str)          # number finished, total, message
     done = Signal(bool)                   # cancelled
 
-    def __init__(self, entries, target, parent=None, *, reference_path=None, external_reference_wav=None, eq_root=None, eq_plugin=None):
+    def __init__(self, entries, target, parent=None, *, reference_path=None, external_reference_wav=None, eq_root=None, eq_plugin=None, auto_cleanup=True):
         super().__init__(parent)
         self.eq_root = eq_root
         self.eq_plugin = eq_plugin
+        self.auto_cleanup = auto_cleanup
         self.entries = entries
         self.target = Path(target)
         self.reference_path = reference_path
@@ -56,7 +57,7 @@ class AlbumBatchWorker(QThread):
 
     def run(self):
         from .auto_master import master_song, MasteringCancelled
-        from .album_stem_pipeline import source_signature, can_reuse_master, master_stem_folder
+        from .album_stem_pipeline import can_reuse_master, master_stem_folder, master_album_stereo
         from .album_export_naming import rename_album_master
         from .album_stem_pipeline import master_album_with_eq
         master = master_song
@@ -71,7 +72,8 @@ class AlbumBatchWorker(QThread):
             if self.stop_event.is_set():
                 break
             if can_reuse_master(row, external_reference_wav=self.external_reference_wav,
-                                corrective_eq=self.eq_plugin is not None):
+                                corrective_eq=self.eq_plugin is not None,
+                                auto_cleanup=self.auto_cleanup):
                 self.item.emit(idx, 'qc_pass', row.get('result'), '')
             elif (row['kind'] == 'stems' and not Path(row['path']).is_dir()) or (row['kind'] == 'stereo' and not Path(row['path']).is_file()):
                 self.item.emit(idx, 'error', None, 'Source audio introuvable')
@@ -83,11 +85,13 @@ class AlbumBatchWorker(QThread):
                             reference_path=self.reference_path,
                             external_reference_wav=self.external_reference_wav,
                             stem_saturation=row.get('stem_saturation'),
-                            de_sizzle=row.get('stem_de_sizzle'), master_fn=master)
+                            de_sizzle=row.get('stem_de_sizzle'), master_fn=master,
+                            auto_cleanup=self.auto_cleanup)
                     else:
-                        self.stage.emit(finished, count, 'Mastering : ' + row['title'])
-                        result = rename_album_master(dict(master(row['path'], self.target, stop=self.stop_event)), row['title'])
-                        result['album_source_signature'] = source_signature(row['path'], 'stereo')
+                        result = master_album_stereo(row['path'], self.target, master=master,
+                            stop=self.stop_event, auto_cleanup=self.auto_cleanup,
+                            progress=lambda message: self.stage.emit(finished, count, message))
+                        result = rename_album_master(result, row['title'])
                     self.item.emit(idx, result['status'], result, '')
                 except MasteringCancelled:
                     self.stop_event.set()
@@ -1237,7 +1241,7 @@ class AlbumStudioPage(QWidget):
         self.progress.hide()
         layout.addWidget(self.progress)
         bottom = QHBoxLayout()
-        self.run_btn = QPushButton('✦  AUTO PRODUCE ALBUM — Hermes + 3 variantes')
+        self.run_btn = QPushButton('✦ Auto Produce Album')
         self.run_btn.setObjectName('primary')
         self.run_btn.clicked.connect(self._run)
         bottom.addWidget(self.run_btn, 1)
@@ -1255,12 +1259,30 @@ class AlbumStudioPage(QWidget):
         self.export_masters_btn.clicked.connect(self._export_album)
         bottom.insertWidget(2, self.export_masters_btn)
         layout.addLayout(bottom)
+        advanced_toggle = QPushButton(self._album_text('Réglages de production', 'Production settings'))
+        advanced_toggle.setCheckable(True)
+        layout.addWidget(advanced_toggle)
+        advanced = QWidget(self)
+        advanced.hide()
+        advanced_toggle.toggled.connect(advanced.setVisible)
+        layout.addWidget(advanced)
+        options = QVBoxLayout(advanced)
+        options.setContentsMargins(0, 0, 0, 0)
+        self.auto_cleanup = QCheckBox(self._album_text(
+            'Corriger automatiquement les passages aigus agressifs',
+            'Automatically tame harsh high-frequency passages'))
+        self.auto_cleanup.setChecked(self.project.get('album_auto_cleanup_enabled', True) is True)
+        self.auto_cleanup.toggled.connect(self._set_auto_cleanup)
+        options.addWidget(self.auto_cleanup)
         self.album_eq = QCheckBox(self._album_text(
             'Prochain rendu · EQ correctif Hermes avec Pro-Q 4',
             'Next run · Hermes corrective EQ with Pro-Q 4'))
         self.album_eq.setChecked(self.project.get('album_corrective_eq_enabled') is True)
         self.album_eq.toggled.connect(self._set_album_eq)
-        layout.addWidget(self.album_eq)
+        options.addWidget(self.album_eq)
+        self.production_flow = QLabel()
+        layout.addWidget(self.production_flow)
+        self._update_production_flow()
 
     @staticmethod
     def _album_text(french, english):
@@ -1280,6 +1302,19 @@ class AlbumStudioPage(QWidget):
         if result or track.get('error'):
             return self._album_text('À refaire', 'Needs a new render'), '#f2bb8d'
         return self._album_text('En attente', 'Waiting'), '#b3b9c8'
+
+    def _set_auto_cleanup(self, enabled):
+        self.project['album_auto_cleanup_enabled'] = enabled
+        self._update_production_flow()
+        self._save()
+
+    def _update_production_flow(self):
+        if self.auto_cleanup.isChecked():
+            text = self._album_text('Analyse et corrections → Mix → Mastering → QC',
+                                    'Analyze and clean up → Mix → Master → QC')
+        else:
+            text = self._album_text('Mix → Mastering → QC', 'Mix → Master → QC')
+        self.production_flow.setText(text)
 
     def _set_album_eq(self, enabled):
         self.project['album_corrective_eq_enabled'] = enabled
@@ -1824,6 +1859,9 @@ class AlbumStudioPage(QWidget):
             result = track.get('result') or {}
             parts = []
             if track.get('status') in ('qc_pass', 'needs_review') and Path(result.get('file') or '.').is_file():
+                if result.get('album_auto_cleanup_enabled'):
+                    count = sum(len(markers) for markers in result.get('album_auto_de_sizzle', {}).values())
+                    parts.append(self._album_text(f'De-Sizzle auto : {count}', f'Auto De-Sizzle: {count}'))
                 selected = result.get('album_selected_candidate')
                 if selected:
                     parts.append({'balanced': 'Balanced', 'vocal-focus': 'Vocal Focus',
@@ -1907,6 +1945,7 @@ class AlbumStudioPage(QWidget):
             f'{len(tracks)} songs · {nstereo} stereo WAVs · {nstems} stem projects'))
         self.release_check_btn.setEnabled(bool(tracks) and not self._busy())
         self.export_masters_btn.setEnabled(bool(tracks) and not self._busy())
+        self.auto_cleanup.setEnabled(not self._busy())
         self.album_eq.setEnabled(not self._busy())
         self.run_btn.setEnabled(bool(tracks) and not self._busy())
         self.back_btn.setEnabled(not self._busy())
@@ -1956,7 +1995,7 @@ class AlbumStudioPage(QWidget):
             rows, self.export_dir, self,
             reference_path=library_path(self.root),
             external_reference_wav=str(external) if external else None,
-            eq_root=self.root, eq_plugin=eq_plugin)
+            eq_root=self.root, eq_plugin=eq_plugin, auto_cleanup=self.auto_cleanup.isChecked())
         self._worker.item.connect(self._item_result)
         self._worker.stage.connect(self._progress)
         self._worker.done.connect(self._done)
@@ -1969,8 +2008,8 @@ class AlbumStudioPage(QWidget):
         self.progress.show()
         self.progress.setValue(0)
         self.progress_text.setText('Préparation de la file de traitement…')
-        self._refresh()
         self._worker.start()
+        self._refresh()
 
     def _item_result(self, index, status, result, error):
         if index >= len(self.project['tracks']): return
