@@ -9,12 +9,13 @@ from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel,
     QPushButton, QLineEdit, QComboBox, QFileDialog, QMessageBox, QProgressBar, QScrollArea,
     QListWidget, QListWidgetItem, QAbstractItemView, QApplication, QDialog, QSlider,
-    QCheckBox, QDoubleSpinBox, QDialogButtonBox, QPlainTextEdit)
+    QCheckBox, QDoubleSpinBox, QDialogButtonBox, QPlainTextEdit, QMenu)
 
 from .album_project import (empty_project, load_project, save_project,
                             add_entries, discover_album, album_summary, reorder_tracks, move_track_onto)
 from .album_match_advisor import advise_album, localized_card
 from .ui_language import get_language
+from .version import APP_VERSION
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
 
@@ -1106,29 +1107,25 @@ class AlbumStudioPage(QWidget):
         layout.setContentsMargins(30, 20, 30, 20)
         layout.setSpacing(12)
         top = QHBoxLayout()
-        self.back_btn = QPushButton('←  Retour à Auto Studio')
+        self.back_btn = QPushButton(self._album_text('← Auto Studio', '← Back to Auto Studio'))
         self.back_btn.clicked.connect(self._back)
         top.addWidget(self.back_btn)
         heading = QLabel('ALBUM STUDIO')
         heading.setStyleSheet('font-size:23px;font-weight:750;background:transparent')
         top.addWidget(heading)
         top.addStretch()
-        self.label = QLabel('v0.27.0 · JUCE Live Stem Lab')
+        self.label = QLabel(f'v{APP_VERSION}')
         self.label.setStyleSheet('color:#afb4c9;background:transparent')
         top.addWidget(self.label)
         layout.addLayout(top)
-        caption = QLabel('Les dossiers stems utilisent des mesures DSP et Hermes local pour proposer des gains prudents pour Balanced / Vocal Focus / Punchy. En cas d’échec, variantes de secours. Hermes évalue ensuite les trois WAV et sélectionne un candidat (secours : Balanced).')
-        caption.setWordWrap(True)
-        caption.setStyleSheet('background:transparent;color:#abb5c8')
-        layout.addWidget(caption)
         row = QHBoxLayout()
         self.title = QLineEdit(self.project.get('album','Mon album'))
-        self.title.setPlaceholderText('Nom de l’album')
+        self.title.setPlaceholderText(self._album_text('Nom de l’album', 'Album title'))
         self.title.editingFinished.connect(self._save_title)
         row.addWidget(self.title, 1)
-        for text, handler in (('Ajouter des WAV', self._add_wavs),
-                              ('Ajouter stems', self._add_stems),
-                              ('Importer dossier album', self._add_folder)):
+        for text, handler in ((self._album_text('Ajouter des WAV', 'Add WAVs'), self._add_wavs),
+                              (self._album_text('Ajouter stems', 'Add stems'), self._add_stems),
+                              (self._album_text('Importer dossier album', 'Import album folder'), self._add_folder)):
             b = QPushButton(text)
             b.clicked.connect(handler)
             row.addWidget(b)
@@ -1136,6 +1133,21 @@ class AlbumStudioPage(QWidget):
         self.summary = QLabel()
         self.summary.setStyleSheet('background:transparent;color:#b7c0d1')
         layout.addWidget(self.summary)
+        self.album_tools_toggle = QPushButton(self._album_text(
+            'Référence et outils d’album', 'Reference and album tools'))
+        self.album_tools_toggle.setCheckable(True)
+        layout.addWidget(self.album_tools_toggle)
+        album_tools = QScrollArea(self)
+        album_tools.setWidgetResizable(True)
+        album_tools.setFrameShape(QFrame.NoFrame)
+        album_tools.setMaximumHeight(280)
+        album_tools.hide()
+        self.album_tools_toggle.toggled.connect(album_tools.setVisible)
+        tools_content = QWidget()
+        album_tools.setWidget(tools_content)
+        main_layout = layout
+        layout = QVBoxLayout(tools_content)
+        layout.setContentsMargins(0, 0, 0, 0)
         self.import_master_btn=QPushButton('✓ Reconnaître les masters QC existants (sans remasteriser)')
         self.import_master_btn.setToolTip('Vérification indépendante du WAV et du rapport .qc.json en local.')
         self.import_master_btn.clicked.connect(self._recognize_existing)
@@ -1198,7 +1210,9 @@ class AlbumStudioPage(QWidget):
         self.ab_button.clicked.connect(self._open_ab)
         self.ab_button.setEnabled(False)
         layout.addWidget(self.ab_button)
-        self.order_hint = QLabel('⠿ Glisse une chanson directement SUR une autre carte pour changer son ordre.')
+        layout = main_layout
+        self.order_hint = QLabel(self._album_text('⠿ Glisse les cartes pour changer l’ordre.',
+                                                '⠿ Drag song cards to reorder.'))
         self.order_hint.setStyleSheet('color:#afbbcf;background:transparent;font-size:11px;')
         layout.addWidget(self.order_hint)
         self.track_list = AlbumOrderList(self)
@@ -1217,12 +1231,14 @@ class AlbumStudioPage(QWidget):
         self.track_list.model().rowsMoved.connect(self._schedule_track_reorder)
         self.track_list.setMinimumHeight(280)
         layout.addWidget(self.track_list, 3)
-        self.progress_text = QLabel('Prêt à organiser ton album.')
+        layout.addWidget(album_tools)
+        self.progress_text = QLabel(self._album_text('Prêt à organiser ton album.', 'Album ready to edit.'))
         self.progress_text.setStyleSheet('background:transparent;color:#b8c4de')
         layout.addWidget(self.progress_text)
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
+        self.progress.hide()
         layout.addWidget(self.progress)
         bottom = QHBoxLayout()
         self.run_btn = QPushButton('✦  AUTO PRODUCE ALBUM — Hermes + 3 variantes')
@@ -1233,22 +1249,38 @@ class AlbumStudioPage(QWidget):
         self.cancel_btn.clicked.connect(self._cancel)
         self.cancel_btn.hide()
         bottom.addWidget(self.cancel_btn)
-        self.report_btn = QPushButton('Ouvrir le dossier QC')
+        self.report_btn = QPushButton(self._album_text('Dossier QC', 'QC folder'))
         self.report_btn.clicked.connect(self._open_output)
         bottom.addWidget(self.report_btn)
-        layout.addLayout(bottom)
-        self.release_check_btn = QPushButton('Vérifier les masters avant sortie')
+        self.release_check_btn = QPushButton(self._album_text('Vérifier les masters', 'Release Check'))
         self.release_check_btn.clicked.connect(self._check_release)
-        layout.addWidget(self.release_check_btn)
-        self.album_eq = QCheckBox('Appliquer l’EQ correctif Hermes avec Pro-Q 4 avant le mastering')
+        bottom.insertWidget(1, self.release_check_btn)
+        layout.addLayout(bottom)
+        self.album_eq = QCheckBox(self._album_text(
+            'Prochain rendu · EQ correctif Hermes avec Pro-Q 4',
+            'Next run · Hermes corrective EQ with Pro-Q 4'))
         self.album_eq.setChecked(self.project.get('album_corrective_eq_enabled') is True)
         self.album_eq.toggled.connect(self._set_album_eq)
         layout.addWidget(self.album_eq)
-        foot = QLabel('Décisions Hermes limitées aux gains de groupes (±1 dB), pour les prémix. Hermes propose le mix à masteriser (secours : Balanced). '
-                      'La cohérence artistique de l’album reste à développer.')
-        foot.setWordWrap(True)
-        foot.setStyleSheet('background:transparent;color:#a0aabd;font-size:12px')
-        layout.addWidget(foot)
+
+    @staticmethod
+    def _album_text(french, english):
+        return english if get_language() == 'en' else french
+
+    def _card_status(self, track):
+        status = track.get('status', 'waiting')
+        result = track.get('result') or {}
+        if status in ('qc_pass', 'needs_review') and not Path(result.get('file') or '.').is_file():
+            return self._album_text('Master introuvable', 'Master missing'), '#f2bb8d'
+        if status == 'qc_pass':
+            return self._album_text('Master vérifié', 'Master verified'), '#a6e2bd'
+        if status == 'needs_review':
+            return self._album_text('QC à vérifier', 'Review QC'), '#f2bb8d'
+        if status == 'error':
+            return self._album_text('Rendu en échec', 'Render failed'), '#ff9f9f'
+        if result or track.get('error'):
+            return self._album_text('À refaire', 'Needs a new render'), '#f2bb8d'
+        return self._album_text('En attente', 'Waiting'), '#b3b9c8'
 
     def _set_album_eq(self, enabled):
         self.project['album_corrective_eq_enabled'] = enabled
@@ -1470,6 +1502,10 @@ class AlbumStudioPage(QWidget):
             self.external_ref_clear.setEnabled(
                 bool(self.project.get('external_reference_wav')) and not self._busy())
         self.external_ref_select.setEnabled(not self._busy())
+        text = self._album_text('Référence et outils d’album', 'Reference and album tools')
+        if ref and self._reference_mode() == 'external':
+            text += ' · ' + ref.name
+        self.album_tools_toggle.setText(text)
         choice=self.reference_picker.currentData()
         active_external=(self._reference_mode()=='external')
         album_ok=False
@@ -1777,77 +1813,75 @@ class AlbumStudioPage(QWidget):
             name = QLabel(track['title'])
             name.setAttribute(Qt.WA_TransparentForMouseEvents, True)
             name.setStyleSheet('font-size:14px;font-weight:650;background:transparent')
-            status = track.get('status', 'waiting')
-            kind = 'Stems · mixage requis' if track['kind']=='stems' else 'WAV stéréo'
-            detail = QLabel(f'{kind}   ·   {status}' + (f"  ·  {track['error'][:90]}" if track.get('error') else '') + ('  ·  3 variantes WAV disponibles' if (track.get('result') or {}).get('album_candidates') else ''))
+            status, color = self._card_status(track)
+            heading = QHBoxLayout()
+            heading.addWidget(name, 1)
+            badge = QLabel(status)
+            badge.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            badge.setStyleSheet(f'color:{color};font-size:11px;font-weight:650;')
+            heading.addWidget(badge)
+            info.addLayout(heading)
+
+            result = track.get('result') or {}
+            parts = []
+            if track.get('status') in ('qc_pass', 'needs_review') and Path(result.get('file') or '.').is_file():
+                selected = result.get('album_selected_candidate')
+                if selected:
+                    parts.append({'balanced': 'Balanced', 'vocal-focus': 'Vocal Focus',
+                                  'punchy': 'Punchy'}.get(selected, selected))
+                eq = result.get('album_corrective_eq')
+                if eq:
+                    parts.append(self._album_text('EQ Hermes appliqué', 'Hermes EQ applied')
+                                 if eq.get('moves') else
+                                 self._album_text('EQ Hermes : aucun ajustement', 'Hermes EQ: no adjustment'))
+                else:
+                    parts.append(self._album_text('Sans EQ Hermes', 'No Hermes EQ recorded'))
+            if track.get('error'):
+                parts.append(track['error'])
+            if not parts:
+                parts.append('Stems' if track['kind'] == 'stems' else self._album_text('WAV stéréo', 'Stereo WAV'))
+            detail = QLabel(' · '.join(parts)[:150])
             detail.setStyleSheet('color:#b3b9c8;font-size:11px;background:transparent')
             detail.setWordWrap(True)
             detail.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-            result = track.get('result') or {}
-            selected = result.get('album_selected_candidate')
-            selection = result.get('album_ai_selection') or {}
-            eq = result.get('album_corrective_eq')
-            if eq:
-                detail.setText(detail.text() + ('  ·  EQ Hermes appliqué' if eq.get('moves')
-                                               else '  ·  EQ Hermes : aucun ajustement'))
-            if selected:
-                label = {'balanced': 'Balanced', 'vocal-focus': 'Vocal Focus', 'punchy': 'Punchy'}.get(selected, selected)
-                mode = '✦ Choix IA' if selection.get('mode') == 'hermes' else '⚠ Choix secours'
-                choice = QLabel(f'{mode} : {label}  →  Master')
-                choice.setStyleSheet('color:#a6e2bd;font-size:12px;font-weight:650;background:transparent')
-                choice.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-                info.addWidget(name)
-                info.addWidget(choice)
-                detail.setText(detail.text() + f'  ·  Master : {label}')
-            ai_mode = (track.get('result') or {}).get('album_ai_decisions', {}).get('mode')
-            if ai_mode:
-                detail.setText(detail.text() + ('  ·  Hermes ✓' if ai_mode == 'hermes' else '  ·  IA secours'))
-            if not selected:
-                info.addWidget(name)
             info.addWidget(detail)
             line.addLayout(info, 1)
-            variants = (track.get('result') or {}).get('album_candidates') or {}
-            ai_decisions = (track.get('result') or {}).get('album_ai_decisions')
-            if isinstance(ai_decisions, dict):
-                ai_button = QPushButton('🧠  IA' if ai_decisions.get('mode') == 'hermes' else '⚠  Secours')
-                ai_button.setToolTip('Voir le détail des décisions ou la raison du mode de secours')
-                ai_button.setEnabled(not self._busy())
-                ai_button.clicked.connect(lambda _, n=i: self._show_ai_decisions(n))
-                line.addWidget(ai_button)
-            selection = (track.get('result') or {}).get('album_ai_selection')
-            if isinstance(selection, dict):
-                select_btn = QPushButton('🎯  Choix IA' if selection.get('mode') == 'hermes' else '🎯  Choix secours')
-                select_btn.setEnabled(not self._busy())
-                select_btn.clicked.connect(lambda _, n=i: self._show_ai_selection(n))
-                line.addWidget(select_btn)
-            if len(variants) == 3:
-                view = QPushButton('♫  3 WAV')
-                view.setToolTip('Ouvrir le dossier des trois variantes enregistrées')
-                view.setEnabled(not self._busy())
-                view.clicked.connect(lambda _, n=i: self._open_candidates(n))
-                line.addWidget(view)
-            if self._ab_track_ready(path):
-                ab_track_button=QPushButton('♫ A/B')
-                ab_track_button.setToolTip('Comparer le master de '+track['title'])
-                ab_track_button.clicked.connect(
-                    lambda _, source=path: self._open_ab_for_song(source))
-                line.addWidget(ab_track_button)
-            if track['kind']=='stems':
-                fx_btn=QPushButton('⚡ FX Stems')
-                fx_btn.clicked.connect(lambda _, source=path: self._stem_fx_for(source))
-                line.addWidget(fx_btn)
-                live_btn=QPushButton('▶ Live FX')
-                live_btn.setToolTip('JUCE : écouter les stems et changer les effets en direct, sans WAV temporaire')
-                live_btn.clicked.connect(lambda _,source=path:self._live_fx_for(source))
+
+            ab_track_button = QPushButton('A/B')
+            ab_track_button.setEnabled(self._ab_track_ready(path))
+            ab_track_button.setToolTip(self._album_text(
+                'Analyse la cohérence du master pour activer A/B.',
+                'Run the album consistency analysis on the master to enable A/B.'))
+            ab_track_button.clicked.connect(lambda _, source=path: self._open_ab_for_song(source))
+            line.addWidget(ab_track_button)
+            if track['kind'] == 'stems':
+                live_btn = QPushButton('Live FX')
+                live_btn.setEnabled(not self._busy())
+                live_btn.clicked.connect(lambda _, source=path: self._live_fx_for(source))
                 line.addWidget(live_btn)
+
+            more = QPushButton('⋯')
+            more.setAccessibleName(self._album_text('Actions pour cette chanson', 'Song actions'))
+            more.setFixedWidth(34)
+            more.setEnabled(not self._busy())
+            menu = QMenu(more)
+            if isinstance(result.get('album_ai_decisions'), dict):
+                menu.addAction(self._album_text('IA · décisions de mix', 'AI mix decisions'),
+                               lambda checked=False, n=i: self._show_ai_decisions(n))
+            if isinstance(result.get('album_ai_selection'), dict):
+                menu.addAction(self._album_text('Choix IA du prémix', 'AI mix selection'),
+                               lambda checked=False, n=i: self._show_ai_selection(n))
+            if len(result.get('album_candidates') or {}) == 3:
+                menu.addAction(self._album_text('Ouvrir les 3 WAV', 'Open the 3 WAVs'),
+                               lambda checked=False, n=i: self._open_candidates(n))
+            if track['kind'] == 'stems':
+                menu.addAction('FX Stems', lambda checked=False, source=path: self._stem_fx_for(source))
+            menu.addAction(self._album_text('Retirer de l’album', 'Remove from album'),
+                           lambda checked=False, n=i: self._remove(n))
+            more.setMenu(menu)
+            line.addWidget(more)
             drag_handle = AlbumDragHandle(self.track_list, card)
             line.addWidget(drag_handle)
-            for text, cb in (('×', lambda _, n=i: self._remove(n)),):
-                button = QPushButton(text)
-                button.setFixedWidth(32)
-                button.setEnabled(not self._busy())
-                button.clicked.connect(cb)
-                line.addWidget(button)
             item = QListWidgetItem()
             item.setData(Qt.UserRole, track['path'])
             item.setSizeHint(card.sizeHint())
@@ -1869,7 +1903,9 @@ class AlbumStudioPage(QWidget):
             else QAbstractItemView.NoDragDrop)
         nstereo = sum(t['kind']=='stereo' for t in tracks)
         nstems = len(tracks) - nstereo
-        self.summary.setText(f'{len(tracks)} chansons · {nstereo} WAV stéréo · {nstems} projets stems')
+        self.summary.setText(self._album_text(
+            f'{len(tracks)} chansons · {nstereo} WAV stéréo · {nstems} projets stems',
+            f'{len(tracks)} songs · {nstereo} stereo WAVs · {nstems} stem projects'))
         self.release_check_btn.setEnabled(bool(tracks) and not self._busy())
         self.album_eq.setEnabled(not self._busy())
         self.run_btn.setEnabled(bool(tracks) and not self._busy())
@@ -1929,6 +1965,8 @@ class AlbumStudioPage(QWidget):
         self.cancel_btn.show()
         self.cancel_btn.setEnabled(True)
         self.back_btn.setEnabled(False)
+        self.progress.setFormat(self._album_text('Production · %p%', 'Production · %p%'))
+        self.progress.show()
         self.progress.setValue(0)
         self.progress_text.setText('Préparation de la file de traitement…')
         self._refresh()
@@ -2030,6 +2068,8 @@ class AlbumStudioPage(QWidget):
         worker.finished.connect(worker.deleteLater)
         self.cancel_btn.show()
         self.cancel_btn.setEnabled(True)
+        self.progress.setFormat(self._album_text('Contrôle sortie · %p%', 'Release check · %p%'))
+        self.progress.show()
         self.progress.setValue(0)
         self._refresh()
         worker.start()
