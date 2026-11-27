@@ -6,6 +6,7 @@
 #include <vector>
 #include <cmath>
 #include <cstdio>
+#include "live_plugin_audition.h"
 
 using namespace juce;
 
@@ -62,7 +63,7 @@ int main(int argc, char** argv) {
     StringArray a;
     for (int i = 1; i < argc; ++i) a.add(String::fromUTF8(argv[i]));
     if (a.isEmpty() || a[0] == "--help") {
-        std::cout << "Usage:\n  mastering-host inspect --plugin PATH [--sample-rate 48000]\n  mastering-host render --plugin PATH --input INPUT.wav --output OUTPUT.wav [--set INDEX:VALUE ...] [--state-in FILE] [--state-out FILE]\n";
+        std::cout << "Usage:\n  mastering-host inspect --plugin PATH [--sample-rate 48000]\n  mastering-host render --plugin PATH --input INPUT.wav --output OUTPUT.wav [--set INDEX:VALUE ...] [--state-in FILE] [--state-out FILE]\n  mastering-host audition --plugin PATH --input INPUT.wav [--set INDEX:VALUE ...]\n";
         return 0;
     }
     const String cmd = a[0], path = arg(a, "--plugin");
@@ -73,7 +74,7 @@ int main(int argc, char** argv) {
     AudioFormatManager formats; formats.registerBasicFormats();
     std::unique_ptr<AudioFormatReader> reader;
     double sampleRate = arg(a, "--sample-rate", "48000").getDoubleValue();
-    if (cmd == "render") {
+    if (cmd == "render" || cmd == "audition") {
         reader.reset(formats.createReaderFor(input));
         if (!reader) { printJson(error("Cannot read input WAV")); return 3; }
         sampleRate = reader->sampleRate;
@@ -101,7 +102,7 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "[HOST DEBUG] preserving bus layout: input=%d output=%d processing=%d\n",
                  inputChannels, outputChannels, processingChannels);
     std::fflush(stderr);
-    if (cmd == "render" && (inputChannels < 2 || outputChannels < 2 || processingChannels > 64)) {
+    if ((cmd == "render" || cmd == "audition") && (inputChannels < 2 || outputChannels < 2 || processingChannels > 64)) {
         printJson(error("Unsupported plugin channel configuration"));
         return 7;
     }
@@ -198,6 +199,13 @@ int main(int argc, char** argv) {
         if (!File(stateOut).replaceWithData(data.getData(), data.getSize())) { printJson(error("Cannot save state file")); return 5; }
     }
     checkpoint("state handling complete");
+    if (cmd == "audition") {
+        if (processingChannels > 16) { printJson(error("Unsupported audition channel count")); return 7; }
+        const auto failure = auditionPlugin(*reader, *plugin, processingChannels);
+        plugin->releaseResources();
+        if (failure.isNotEmpty()) { printJson(error(failure)); return 6; }
+        return 0;
+    }
     const String outputPath = arg(a, "--output");
     const File output(outputPath);
     if (outputPath.isEmpty() || output == input) { printJson(error("Output must differ from input")); return 5; }
