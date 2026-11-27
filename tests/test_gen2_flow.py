@@ -30,8 +30,8 @@ class TestGen2Flow(unittest.TestCase):
         self.assertIn('self._start_loudness', body('_evaluation_done'))
         self.assertIn('self.automaticAnalysisFinished.emit(True', body('_loudness_done'))
 
-    def test_gen2_does_not_offer_nonexistent_gen3(self):
-        self.assertIn('self._gen2_btn.setVisible(generation == 1)', body('_refresh_generation_label'))
+    def test_next_generation_uses_actual_number(self):
+        self.assertIn('generation + 1', body('_refresh_generation_label'))
 
     def test_reports_status_and_preserves_originals(self):
         self.assertIn('trois nouveaux WAV prêts', body('_open_gen2_comparison'))

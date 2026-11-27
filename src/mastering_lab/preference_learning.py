@@ -45,7 +45,7 @@ def _atomic_save(path, payload):
         temp.unlink(missing_ok=True)
 
 
-def save_choice(path, *, selected, metrics, ai_suggested=None, song=None):
+def save_choice(path, *, selected, metrics, ai_suggested=None, song=None, ratings=None, session=None):
     if selected not in VARIANTS:
         raise ValueError('Variante non reconnue.')
     if not isinstance(metrics, dict) or set(metrics) != set(VARIANTS):
@@ -67,7 +67,19 @@ def save_choice(path, *, selected, metrics, ai_suggested=None, song=None):
     entry = {'date_utc': datetime.now(timezone.utc).isoformat(),
              'selected': selected, 'ai_suggested': ai_suggested if ai_suggested in VARIANTS else None,
              'song': str(song or '')[:120], 'metrics': checked}
+    if ratings is not None:
+        if (not isinstance(ratings, dict) or set(ratings) != set(VARIANTS)
+                or any(type(v) is not int or not 1 <= v <= 5 for v in ratings.values())):
+            raise ValueError('Rate all three premixes from 1 to 5.')
+        if ratings[selected] != max(ratings.values()):
+            raise ValueError('Select one of your highest-rated premixes as the favorite.')
+        entry['ratings'] = dict(ratings)
+        entry['scope'] = 'premix_before_compression'
+    if session:
+        entry['session'] = str(session)
     data = load_preferences(path)
+    if session:
+        data['examples'] = [e for e in data['examples'] if e.get('session') != str(session)]
     data['examples'] = (data['examples'] + [entry])[-MAX_EXAMPLES:]
     _atomic_save(path, data)
     return len(data['examples'])
@@ -89,6 +101,10 @@ def preference_context(path):
             means[key] = round(sum(vals) / len(vals), 3)
     return {'count': len(examples), 'variant_counts': {k: count[k] for k in VARIANTS},
             'chosen_mix_metric_means': means,
+            'rated_examples': [{
+                'selected': e['selected'], 'ratings': e['ratings'],
+                'metrics': e['metrics'], 'scope': 'premix_before_compression',
+            } for e in examples if isinstance(e.get('ratings'), dict)][-8:],
             'caution': 'These are explicit past selections, not proof of objective audio quality. '
                        'Use as a weak preference signal; never override measured safety constraints.'}
 

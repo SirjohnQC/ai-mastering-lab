@@ -98,6 +98,10 @@ TRANSLATIONS = {
 # Additional guided workflow and diagnostics labels. A dictionary is used
 # rather than translating arbitrary log text or model output on the fly.
 TRANSLATIONS['fr'].update({
+    'guided_correction': 'Analyser et proposer un correctif EQ → écouter Avant / Après → donner mon avis',
+    'use_eq_master': 'Utiliser cet essai EQ pour le mastering (sans compression Pro-C 3)',
+    'gen2': 'Utiliser mes notes pour créer la prochaine passe',
+    'iteration_ready': 'Nouvelle passe prête. Écoute et note ces nouveaux prémix; les notes précédentes restent dans ta mémoire locale.',
  'import_headline':'Ta musique, ton prochain mix.',
  'import_explanation':'Ajoute les pistes séparées d’une chanson, puis crée trois propositions de mixage. Pour plusieurs chansons ou un WAV stéréo, ouvre Mode album.',
  'selected_stems':'STEMS SÉLECTIONNÉS', 'no_stems':'Aucun stem chargé',
@@ -142,6 +146,10 @@ TRANSLATIONS['fr'].update({
  'compare_tech_note':'Les diagnostics PCM ne mesurent pas directement le gain reduction Pro-C 3.',
 })
 TRANSLATIONS['en'].update({
+    'guided_correction': 'Analyze and propose an EQ fix → listen Before / After → give feedback',
+    'use_eq_master': 'Use this EQ version for mastering (without Pro-C 3 compression)',
+    'gen2': 'Use my ratings to create the next pass',
+    'iteration_ready': 'New pass ready. Listen and rate these new premixes; previous ratings remain in your local history.',
  'import_headline':'Your music, your next mix.',
  'import_explanation':'Add one song’s separate tracks, then create three mix options. For multiple songs or a stereo WAV, open Album Mode.',
  'selected_stems':'SELECTED STEMS', 'no_stems':'No stems loaded',

@@ -4,7 +4,7 @@
 
 # FRANKENSTEM · AI Mastering Lab
 
-A local Windows studio for stem mixing, comparing alternatives, technical mastering and album preparation. The current desktop application reports **v0.27.4**. Audio processing uses Python, FFmpeg and an optional native JUCE/VST3 host; local Ollama models provide optional advice.
+A local Windows studio for stem mixing, comparing alternatives, technical mastering and album preparation. The current desktop application reports **v0.28.0**. Audio processing uses Python, FFmpeg and an optional native JUCE/VST3 host; local Ollama models provide optional advice.
 
 ## Start with the music
 
@@ -30,7 +30,13 @@ python scripts/desktop.py
 
 Install FFmpeg and make `ffmpeg`/`ffprobe` available on PATH for mastering and audio conversion. Build the native host and configure installed, licensed plugins for the VST3 features; see [native build instructions](native/README.md). Pro-Q 4/Pro-C 3 workflows require compatible installed plugins and, for calibrated compression previews, local calibration. Ollama is optional for advice; availability of each audio operation depends on its local tools.
 
-This is a source checkout workflow. The desktop and package versions are both `0.27.4`. The startup loading card displays the FRANKENSTEM logo and version; the main workspace keeps a simple text heading.
+This is a source checkout workflow. The desktop and package versions are both `0.28.0`. The startup loading card displays the FRANKENSTEM logo and version; the main workspace keeps a simple text heading.
+
+## Analyze, fix and learn from your ratings
+
+In Compare, rate the three Original premixes from 1 to 5, save your favorite, then use **Use my ratings to create the next pass**. Recent scores now reach the actual generation proposal, as well as future recommendations. Each approved pass creates new WAVs and can be rated again.
+
+For EQ corrections, use **Analyze and propose an EQ fix**, compare Before/After, record your preference, and explicitly choose **Use this EQ version for mastering** if you want that rendered correction as the source. Read [how analysis, corrections and learning connect](docs/AI_FEEDBACK_LOOP.md), including the limits of spectrogram review and automatic cleanup.
 
 ## UI and workflow review
 

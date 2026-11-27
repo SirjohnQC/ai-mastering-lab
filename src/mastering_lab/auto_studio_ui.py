@@ -226,6 +226,7 @@ class AutoStudioPage(QWidget):
         self._fx_plan = None
         self._fx_source = None
         self._fx_audition = None
+        self._approved_eq_source = None
         self._fx_render_report = None
         self._fx_ab_player = None
         self._ai_decision = None
@@ -625,6 +626,7 @@ class AutoStudioPage(QWidget):
         self.pref_save.setObjectName('secondary')
         self.pref_save.setEnabled(False)
         self.pref_save.clicked.connect(self._save_preference)
+        self.pref_save.hide()  # Visible ratings replace the unscored legacy vote.
         pref_row.addWidget(self.pref_save)
         self.pref_clear = QPushButton('Effacer mes préférences')
         self.pref_clear.setObjectName('secondary')
@@ -759,6 +761,22 @@ class AutoStudioPage(QWidget):
         self.fx_feedback_status = QLabel('')
         self.fx_feedback_status.setWordWrap(True)
         optional_layout.addWidget(self.fx_feedback_status)
+        self.use_eq_master = QPushButton()
+        self.use_eq_master.setObjectName('primary')
+        self.use_eq_master.clicked.connect(self._approve_eq_master)
+        self.use_eq_master.hide()
+        optional_layout.addWidget(self.use_eq_master)
+        self.correction_button = QPushButton()
+        self.correction_button.setEnabled(False)
+        self.correction_button.clicked.connect(self._begin_guided_correction)
+        rv.addWidget(self.correction_button)
+        from .mix_rating_ui import MixRatingPanel
+        self.ratings = MixRatingPanel(self.root, results)
+        self.ratings.selected.connect(self._select_rated_premix)
+        rv.addWidget(self.ratings)
+        self.iteration_status = QLabel()
+        self.iteration_status.setWordWrap(True)
+        rv.addWidget(self.iteration_status)
         rv.addSpacing(8)
         self.continue_btn = QPushButton('→  Continuer vers Mastering — Balanced')
         self.continue_btn.setObjectName('primary')
@@ -775,6 +793,7 @@ class AutoStudioPage(QWidget):
         secondary = QHBoxLayout()
         self.gen2 = QPushButton('✦  Améliorer avec Gen 2')
         self.gen2.setObjectName('secondary')
+        self.gen2.setEnabled(False)
         self.gen2.clicked.connect(self._generate_next)
         more = QPushButton('Retouches Advanced')
         more.setObjectName('secondary')
@@ -784,7 +803,7 @@ class AutoStudioPage(QWidget):
         details.clicked.connect(self._show_details)
         self.more_button = more
         self.details_button = details
-        secondary.addWidget(self.gen2, 1)
+        self.ratings.layout().addWidget(self.gen2)
         secondary.addWidget(more, 1)
         secondary.addWidget(details, 1)
         rv.addLayout(secondary)
@@ -996,6 +1015,9 @@ class AutoStudioPage(QWidget):
         self._refresh_preflight_report()
         self._update_master_button()
         self._refresh_workflow()
+        self.ratings.set_language(lang)
+        self.correction_button.setText(tr(lang, 'guided_correction'))
+        self.use_eq_master.setText(tr(lang, 'use_eq_master'))
 
     def _refresh_workflow(self, *_):
         """Explain the actual screen, including Album Mode, without starting work."""
@@ -1254,12 +1276,13 @@ class AutoStudioPage(QWidget):
             self._go(2)
             self._load_waveforms(paths)
             self.fx_propose.setEnabled(True)
+            self.correction_button.setEnabled(True)
             self._start_ai_evaluation(paths)
             self._player.automaticAnalysisFinished.connect(self._analysis_complete)
             self._player._generation_result_label.setText('Nouvelle génération prête — analyse automatique en cours…')
             if analyze:
                 QTimer.singleShot(120, self._player.start_automatic_analysis)
-            self.gen2.setVisible(not self._report_is_gen2())
+            self.gen2.setVisible(True)
         except Exception as exc:
             self._go(0)
             QMessageBox.warning(self, 'Comparaison impossible', str(exc))
@@ -1287,6 +1310,9 @@ class AutoStudioPage(QWidget):
     def _clear_ai_decision(self):
         self._ai_token += 1
         self._ai_decision = None
+        self.ratings.reset()
+        self.gen2.setEnabled(False)
+        self.iteration_status.clear()
         self._manual_selected = False
         self.ai_status.setText('Choix IA : en attente de trois mixages…')
         self.ai_reason.clear()
@@ -1337,6 +1363,9 @@ class AutoStudioPage(QWidget):
         self.cards[selected].ai_pick.setText('✦  IA recommande' if successful else '⚠  Secours')
         self.ai_use.setVisible(successful and self._selected != selected)
         self.pref_save.setEnabled(isinstance(decision.get('metrics'), dict))
+        self.ratings.set_session(self._report, decision.get('metrics'), selected,
+                                 self.song_title_import.text().strip())
+        self.gen2.setEnabled(self.ratings.metrics is not None)
         # Auto-select the AI recommendation unless the user already chose manually.
         if successful and not self._manual_selected:
             self._select(selected)
@@ -1354,6 +1383,8 @@ class AutoStudioPage(QWidget):
         self._fx_plan = None
         self._fx_source = None
         self._fx_audition = None
+        self._approved_eq_source = None
+        self.use_eq_master.hide()
         self._fx_render_report = None
         if self._fx_ab_player is not None:
             self._fx_ab_player.reset()
@@ -1364,6 +1395,7 @@ class AutoStudioPage(QWidget):
         self.fx_feedback_status.setText('')
         self.fx_listen.hide()
         self.fx_propose.setEnabled(bool(self._player and not self._fx_worker))
+        self.correction_button.setEnabled(bool(self._player and not self._fx_worker))
         self._set_fx_status('AI FX : essai EQ facultatif sur le mix sélectionné. Aucun traitement appliqué.')
         self.fx_memory_status.setText('🧠 Mémoire EQ : analyse non lancée.')
 
@@ -1378,6 +1410,7 @@ class AutoStudioPage(QWidget):
         self._fx_source = source
         self.fx_propose.setEnabled(False)
         self._set_fx_status('🧠 Hermes prépare un essai EQ facultatif…')
+        self.correction_button.setEnabled(False)
         worker = AIFXWorker('propose', source, self.root,
                              reference_path=library_path(self.root),
                              eq_preferences_path=self.root / 'settings' / 'eq_preferences.json',
@@ -1614,8 +1647,8 @@ class AutoStudioPage(QWidget):
         if self._fx_worker is worker:
             self._fx_worker = None
         worker.deleteLater()
-        if self._player:
-            self.fx_propose.setEnabled(True)
+        self.fx_propose.setEnabled(bool(self._player and self._fx_worker is None))
+        self.correction_button.setEnabled(bool(self._player and self._fx_worker is None))
         self.fx_pro_c3.setEnabled(True)
         self.fx_pro_c3_probe.setEnabled(True)
         self.fx_pro_c3_bench.setEnabled(True)
@@ -1686,6 +1719,7 @@ class AutoStudioPage(QWidget):
         else:
             self._fx_audition = result.get('after')
             self._fx_render_report = result
+            self.use_eq_master.setVisible(bool(self._fx_audition and Path(self._fx_audition).is_file()))
             self._set_fx_status('✓ Essai EQ créé. Compare Avant / Après et confirme ta préférence si tu le souhaites. Le master reste inchangé.')
             self.fx_creative.hide()
             self.fx_listen.hide()
@@ -1697,10 +1731,22 @@ class AutoStudioPage(QWidget):
                 self.fx_listen.show()
 
     def _fx_stop_main_audio(self):
+        self.unified.stop()
         if self._player:
             self._player.stop()
         if self._master_preview is not None:
             self._master_preview.pause()
+
+    def _approve_eq_master(self):
+        if not self._can_change_music():
+            return
+        source = self._selected_mix_path()
+        if (source is None or str(source.resolve()) != self._fx_source
+                or not self._fx_audition or not Path(self._fx_audition).is_file()):
+            QMessageBox.warning(self, 'EQ', tr(self._language, 'missing_source'))
+            return
+        self._approved_eq_source = Path(self._fx_audition).resolve()
+        self._continue_mastering()
 
     def _record_fx_preference(self, choice):
         if not self._fx_render_report or not self._fx_ab_player.sources:
@@ -1738,7 +1784,7 @@ class AutoStudioPage(QWidget):
             song = self.song_title_import.text().strip()
             total = save_choice(preference_path(self.root), selected=self._selected,
                                 metrics=metrics, ai_suggested=self._ai_decision.get('selected'),
-                                song=song)
+                                song=song, session=str(self._report.resolve()))
             self.pref_status.setText(f'✓ Préférence enregistrée ({total} choix). Elle guidera les prochaines évaluations.')
             self.pref_save.setEnabled(False)  # avoid accidental duplicate on current evaluation
         except Exception as exc:
@@ -1808,7 +1854,10 @@ class AutoStudioPage(QWidget):
         player = self._player
         if not player:
             return
-        if hasattr(self, 'unified') and self.unified._files:
+        if player._gen2_thread is not None:
+            self.iteration_status.setText(player._analysis_status.text())
+        if (hasattr(self, 'unified') and self.unified._files
+                and self._current_source == str(Path(player._comparison_source).resolve())):
             return
         try:
             self.clock.setText(player._fmt(player._pos, player.rate) + ' / ' + player._fmt(player.frames, player.rate))
@@ -1822,6 +1871,8 @@ class AutoStudioPage(QWidget):
                 self.analysis_line.setText(player._analysis_status.text())
             if self._current_source != str(Path(player._comparison_source).resolve()):
                 # Gen 2 was produced inside the shared player: update visible results.
+                if self.unified.is_busy():
+                    return
                 if not self.unified.is_busy():
                     self.unified.set_sources(player.paths, session_tag=str(Path(player._comparison_source).resolve()))
                     self.legacy_transport.hide()
@@ -1838,8 +1889,10 @@ class AutoStudioPage(QWidget):
                 self._analysed = False
                 for card in self.cards.values():
                     card.lufs.setText('— LUFS')
-                self.gen2.setVisible(not self._report_is_gen2())
+                self.gen2.setVisible(True)
                 self.analysis_line.setText('Nouvelle génération chargée — analyse en cours…')
+                self.iteration_status.setText(tr(self._language, 'iteration_ready'))
+                self._start_cached_compare()
         except (ValueError, ZeroDivisionError, OSError, TypeError):
             pass
 
@@ -1886,8 +1939,25 @@ class AutoStudioPage(QWidget):
         job.deleteLater()
 
     def _generate_next(self):
-        if self._player is not None:
+        if self._player is not None and self._can_change_music():
+            if not self.ratings.save():
+                return
+            self.unified.stop()
+            if self._fx_ab_player is not None:
+                self._fx_ab_player.stop()
             self._player._start_gen2()
+
+    def _select_rated_premix(self, key):
+        self._user_select(key)
+        self.unified.select_compression('original')
+
+    def _begin_guided_correction(self):
+        if not self._player or not self._can_change_music():
+            return
+        self.optional_tools_panel.show()
+        self.optional_tools_button.setText(tr(self._language, 'options_open'))
+        self._propose_ai_fx()
+        self.stack.widget(2).ensureWidgetVisible(self.fx_status)
 
     def _show_details(self):
         # This is deliberately optional: the main flow doesn't require visiting the
@@ -2013,6 +2083,14 @@ class AutoStudioPage(QWidget):
             return
         new_variant = (self.unified.master_variant(self._selected)
                        if hasattr(self, 'unified') else self._selected)
+        if self._approved_eq_source is not None:
+            original = self._selected_mix_path()
+            if (not self._approved_eq_source.is_file() or original is None
+                    or str(original.resolve()) != self._fx_source):
+                QMessageBox.warning(self, 'EQ', tr(self._language, 'missing_source'))
+                return
+            source = self._approved_eq_source
+            new_variant = self._selected + ' + approved EQ (uncompressed)'
         if self._master_input != source or self._master_mix_variant != new_variant:
             self._master_result = None
             self._master_completed_key = None

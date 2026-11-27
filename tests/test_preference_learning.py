@@ -60,7 +60,7 @@ class PreferenceTests(unittest.TestCase):
                 self.assertEqual((selected,decision['mode']), ('balanced','fallback'))
 
     def test_ui_wiring(self):
-        ui=(Path(__file__).resolve().parents[1]/'src/mastering_lab/auto_studio_ui.py').read_text()
+        ui=(Path(__file__).resolve().parents[1]/'src/mastering_lab/auto_studio_ui.py').read_text(encoding='utf-8')
         self.assertIn('Mémoriser mon choix', ui)
         self.assertIn('def _save_preference', ui)
         self.assertIn('def _clear_preferences_clicked', ui)

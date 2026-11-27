@@ -63,6 +63,11 @@ def test_render_pipeline_three_wavs(tmp_path):
     assert set(saved['variants'])=={'balanced','vocal-focus','punchy'}
     assert Path(saved['parent_comparison'])==report.resolve()
     assert cfg.is_file() and prepared.read_text()=='{}'
+    third=render_generation(result['comparison'],deterministic_proposal(),project_root=root,runner=runner)
+    third_saved=json.loads(Path(third['comparison']).read_text())
+    assert third_saved['generation']==3
+    assert third_saved['parent_comparison']==result['comparison']
+    assert third['folder'] != result['folder']
 
 
 def test_old_session_explains_upgrade(tmp_path):

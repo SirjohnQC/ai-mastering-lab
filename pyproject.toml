@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-mastering-lab"
-version = "0.27.4"
+version = "0.28.0"
 description = "Local-first AI mastering lab starter"
 requires-python = ">=3.10"
 

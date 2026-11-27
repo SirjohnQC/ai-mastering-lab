@@ -57,7 +57,11 @@ def model_proposal(evaluation: dict, *, model='hermes3:8b', timeout=90, transpor
               '"bass": 0, "guitars": 0, "other": 0}, "vocal-focus": {...}, "punchy": {...}}, '
               '"reason": "..."}. Chaque groupe doit être présent dans chaque variante. '
               'Balanced doit rester strictement à zéro. Toutes les valeurs doivent rester entre -1 et +1 dB. '
-              'Les mesures ne prouvent pas qu’un mix sonne mieux.')
+              'Les mesures ne prouvent pas qu’un mix sonne mieux. '
+              'Si user_preferences contient des notes de 1 à 5, utilise les notes élevées '
+              'et basses pour orienter les variantes vers les goûts exprimés. '
+              'Ce sont des notes des prémix avant compression, pas des diagnostics de défauts. '
+              'Respecte toujours les limites de gain et conserve Balanced inchangé.')
     payload = {'model': model, 'stream': False, 'format': 'json', 'options': {'temperature': 0.1},
                'messages': [{'role': 'system', 'content': prompt},
                             {'role': 'user', 'content': json.dumps(evaluation, ensure_ascii=False)}]}
@@ -122,6 +126,7 @@ def render_generation(report_path: str | Path, proposal: dict, *, project_root: 
                       runner=subprocess.run) -> dict:
     """Only render after explicit UI approval; create new session and never overwrite."""
     report, config_path, folder, prepared = read_session(report_path)
+    generation_number = max(1, int(report.get('generation', 1))) + 1
     config = json.loads(config_path.read_text(encoding='utf-8'))
     configs = build_configs(config, proposal['deltas'])
     root = Path(project_root).resolve() if project_root else Path(__file__).resolve().parents[2]
@@ -130,7 +135,7 @@ def render_generation(report_path: str | Path, proposal: dict, *, project_root: 
         raise FileNotFoundError(f'Moteur de rendu introuvable : {engine}')
     parent = Path(report_path).resolve().parent / 'generations'
     parent.mkdir(parents=True, exist_ok=True)
-    generation = parent / ('gen2-' + uuid.uuid4().hex[:10])
+    generation = parent / (f'gen{generation_number}-' + uuid.uuid4().hex[:10])
     generation.mkdir()
     variants = {}
     try:
@@ -150,7 +155,7 @@ def render_generation(report_path: str | Path, proposal: dict, *, project_root: 
         response = {'status': 'ok', 'variants': variants,
                     'source': {'config': str(config_path), 'folder': str(folder), 'prepared': str(prepared)},
                     'parent_comparison': str(Path(report_path).resolve()),
-                    'generation': 2, 'proposal': proposal,
+                    'generation': generation_number, 'proposal': proposal,
                     'created_utc': datetime.now(timezone.utc).isoformat(),
                     'warning': 'Prémix non masterisés. Hermes ne reçoit pas le son et ne juge pas la qualité à l’oreille.'}
         load_comparison(response)  # Validate all 3 WAVs are synchronized before exposing the session.
