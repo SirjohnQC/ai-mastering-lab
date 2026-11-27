@@ -1103,7 +1103,15 @@ class AlbumStudioPage(QWidget):
         self._update_external_reference_display()
 
     def _build(self):
-        layout = QVBoxLayout(self)
+        page_layout = QVBoxLayout(self)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        content = QWidget()
+        scroll.setWidget(content)
+        page_layout.addWidget(scroll)
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(30, 20, 30, 20)
         layout.setSpacing(12)
         top = QHBoxLayout()

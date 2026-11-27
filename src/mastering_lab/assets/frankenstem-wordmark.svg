@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="240" viewBox="0 0 960 240" role="img" aria-labelledby="title desc">
+  <title id="title">FRANKENSTEM — AI Mastering Lab</title>
+  <desc id="desc">Violet stems connect to a mint F beside the FRANKENSTEM wordmark on a dark studio background.</desc>
+  <rect width="960" height="240" rx="24" fill="#11151f"/>
+  <g transform="translate(48 56)">
+    <rect x="2" y="2" width="124" height="124" rx="30" fill="#171e2c" stroke="#344158" stroke-width="2"/>
+    <path d="M25 40h18M25 64h18M25 88h18" fill="none" stroke="#aaa3ff" stroke-width="8" stroke-linecap="round"/>
+    <path d="M57 94V34h43M57 61h33" fill="none" stroke="#73e2bf" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="100" cy="34" r="5" fill="#e9fff7"/>
+  </g>
+  <text x="210" y="119" fill="#f0f5ff" font-family="Segoe UI,Arial,sans-serif" font-size="50" font-weight="700" letter-spacing="5">FRANKENSTEM</text>
+  <text x="213" y="157" fill="#a8b6cb" font-family="Segoe UI,Arial,sans-serif" font-size="17" letter-spacing="5">AI MASTERING LAB</text>
+  <path d="M860 88v64m16-48v32m16-38v44" stroke="#344158" stroke-width="4" stroke-linecap="round"/>
+</svg>

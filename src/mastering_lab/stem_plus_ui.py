@@ -36,7 +36,16 @@ class StemPlusPage(QWidget):
     def __init__(self,root:Path,folder:Path|None=None):
         super().__init__();self.root=root;self.engine=LiveStemMixer();self.rows=[];self.config=None;self._busy=False;self._selected_files_mode=False;self._selected_config_path=root/'sound'/'stem_projects'/'manual-selection'/'stem-mix.json'
         self.session=QSettings('Losing Motivation', 'AI Mastering Lab')
-        outer=QVBoxLayout(self)
+        # The advanced console must not force every workspace above laptop height.
+        page_layout=QVBoxLayout(self)
+        page_layout.setContentsMargins(0,0,0,0)
+        scroll=QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        content=QWidget()
+        scroll.setWidget(content)
+        page_layout.addWidget(scroll)
+        outer=QVBoxLayout(content)
         title=QLabel('STEM+  |  MULTITRACK STUDIO');title.setStyleSheet('font-size:22px;font-weight:bold;color:#b2a9ff');outer.addWidget(title)
         description=QLabel('Console de prémix : Solo / Mute / Gain / Pan en live. EQ Pro-Q 4 disponible après préparation hors ligne. Aucun master final ici.')
         description.setWordWrap(True);outer.addWidget(description)

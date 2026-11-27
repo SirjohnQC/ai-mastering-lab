@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
     QSlider, QProgressBar, QGroupBox, QGridLayout, QFileDialog, QDoubleSpinBox,
     QDockWidget, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QSpinBox, QLineEdit, QAbstractItemView, QDialog, QSplashScreen)
 from .version import APP_VERSION, window_title
+from .studio_brand import studio_icon, loading_card
 from .ollama_startup import ensure_ollama_running
 from .live_ab import LiveAB
 from .stem_plus_ui import StemPlusPage
@@ -75,6 +76,7 @@ class MainWindow(QMainWindow):
     def __init__(self,root:Path):
         super().__init__();self.root=root;self.report={};self.paths={};self.busy=False;self.last_position=0;self.ab=LiveAB();self.ab_signature=None
         self.setWindowTitle(window_title());self.resize(1140,760)
+        self.setWindowIcon(studio_icon())
         self.setStyleSheet(f'''QWidget {{background:{BG};color:{INK};font-size:13px;}}
             QGroupBox,QFrame#panel {{background:{PANEL};border:1px solid #323a4d;border-radius:10px;margin-top:12px;padding:10px;}}
             QGroupBox::title {{subcontrol-origin:margin;left:12px;padding:0 5px;color:{ACCENT};}}
@@ -85,7 +87,12 @@ class MainWindow(QMainWindow):
             QComboBox,QDoubleSpinBox {{background:#262f42;padding:7px;border:1px solid #46516c;border-radius:6px;}}
             QPlainTextEdit {{background:#121a26;border:1px solid #323a4d;border-radius:6px;}}
             QProgressBar {{background:#253044;border:0;border-radius:4px;}}
-            QProgressBar::chunk {{background:{ACCENT};border-radius:4px;}}''')
+            QProgressBar::chunk {{background:{ACCENT};border-radius:4px;}}
+            QTabWidget::pane {{border:0;border-top:1px solid #344158;}}
+            QTabBar::tab {{background:#171e2c;color:#a8b6cb;padding:12px 18px;border-bottom:2px solid transparent;}}
+            QTabBar::tab:selected {{color:#e9fff7;border-bottom:2px solid #73e2bf;}}
+            QTabBar::tab:hover {{background:#253146;}}
+            QPushButton:focus {{border:2px solid #aaa3ff;}}''')
         self.plugin_settings_path=self.root/'settings'/'vst_roles.json'
         ai_menu=self.menuBar().addMenu('Settings')
         ai_menu.addAction('Ollama & AI Models…').triggered.connect(self.open_ai_settings)
@@ -159,6 +166,12 @@ class MainWindow(QMainWindow):
         self.auto_studio.openMastering.connect(self.accept_auto_studio_mix)
         self.workspace.insertTab(0, self.auto_studio, 'AUTO STUDIO')
         self.workspace.setCurrentWidget(self.auto_studio)
+        self.workspace.setTabToolTip(self.workspace.indexOf(self.auto_studio),
+            'Start here: import, produce, compare and master a song, or open Album Mode.')
+        self.workspace.setTabToolTip(self.workspace.indexOf(self.stem_plus),
+            'Advanced stem mixing: gain, pan, solo, mute and individual effects.')
+        self.workspace.setTabToolTip(self.workspace.indexOf(body),
+            'Advanced stereo reference EQ candidates. Final mastering is in Auto Studio.')
         self.workspace.currentChanged.connect(self.workspace_changed)
         self.source.currentIndexChanged.connect(self.reload_source)
         
@@ -218,6 +231,8 @@ class MainWindow(QMainWindow):
         visible=(self.workspace.tabText(index).startswith('MASTERING'))
         self.repair_dock.setVisible(visible)
         self.stem_dock.setVisible(visible)
+        if not visible:
+            self.statusBar().showMessage('FRANKENSTEM · ' + self.workspace.tabText(index))
 
     def create_repair_dock(self):
         """Human annotations; no untrained AI detection claims."""
@@ -736,6 +751,7 @@ class MainWindow(QMainWindow):
 def main(root:Path|None=None)->int:
     root=root or Path(__file__).resolve().parents[2]
     app=QApplication(sys.argv)
+    app.setWindowIcon(studio_icon())
     root=Path(root)
     # First-run setup is optional; Cancel leaves existing operation available.
     try:
@@ -745,8 +761,7 @@ def main(root:Path|None=None)->int:
         QMessageBox.warning(None,'Plugin settings',f'Plugin setup could not load: {exc}')
     # Run the JUCE device preflight in the startup splash, not on opening
     # a song. This process has a hard timeout and never exports audio.
-    splash_art=QPixmap(570,190)
-    splash_art.fill(QColor('#171923'))
+    splash_art=loading_card()
     splash=QSplashScreen(splash_art)
     splash.show()
     splash.showMessage('FRANKENSTEM · Vérification du moteur audio JUCE…',

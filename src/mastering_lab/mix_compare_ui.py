@@ -77,11 +77,12 @@ class _Gen2Worker(QObject):
     finished = Signal(object, object)
     phase = Signal(str)
 
-    def __init__(self, comparison, model, approval=None):
+    def __init__(self, comparison, model, approval=None, project_root=None):
         super().__init__()
         self.comparison = comparison
         self.model = model
         self.approval = approval
+        self.project_root = Path(project_root) if project_root else Path(__file__).resolve().parents[2]
 
     @Slot()
     def run(self):
@@ -92,15 +93,20 @@ class _Gen2Worker(QObject):
                 from .mix_evaluator import evaluate_comparison
                 self.phase.emit('1/2 · Mesures DSP pour proposition Gen 2…')
                 measurements = evaluate_comparison(self.comparison)
+                from .preference_learning import preference_context, preference_path
+                preferences = preference_context(preference_path(self.project_root))
+                measurements['user_preferences'] = preferences
                 try:
                     self.phase.emit('2/2 · Hermes prépare la proposition…')
                     result = model_proposal(measurements, model=self.model)
+                    result['preferences_used'] = bool(preferences)
                 except Exception as error:
                     result = deterministic_proposal()
                     result['ai_error'] = str(error)[:500]
+                    result['preferences_used'] = False
             else:
                 self.phase.emit('Rendu des 3 WAV Gen 2 (progression non estimable)…')
-                result = render_generation(self.comparison, self.approval)
+                result = render_generation(self.comparison, self.approval, project_root=self.project_root)
             self.finished.emit(result, None)
         except Exception as exc:
             self.finished.emit(None, str(exc))
@@ -678,7 +684,7 @@ class MixCompareDialog(QDialog):
         except Exception as exc:
             QMessageBox.information(self, 'Gen 2 — session initiale requise', str(exc))
             return
-        root = Path(__file__).resolve().parents[2]
+        root = getattr(self.parent(), 'root', Path(__file__).resolve().parents[2])
         model = 'hermes3:8b'
         try:
             import json
@@ -694,7 +700,8 @@ class MixCompareDialog(QDialog):
         self._busy_visible(True)
         self._analysis_status.setText('Hermes prépare les ajustements…' if approval is None else 'Rendu Gen 2 des trois WAV…')
         thread = QThread(self)
-        worker = _Gen2Worker(self._comparison_source, model, approval)
+        worker = _Gen2Worker(self._comparison_source, model, approval,
+                             project_root=getattr(self.parent(), 'root', None))
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.phase.connect(self._busy_update)
@@ -752,9 +759,9 @@ class MixCompareDialog(QDialog):
             pass
         self._parent_comparison = parent
         self._current_generation = generation
-        # render_generation() currently produces exactly Gen 2; never offer Gen 3
-        # through a button which incorrectly generates another Gen 2.
-        self._gen2_btn.setVisible(generation == 1)
+        # Each approved pass gets its own files and an explicit parent report.
+        self._gen2_btn.setVisible(True)
+        self._gen2_btn.setText(f'Créer la génération {generation + 1}')
         self._generation_label.setText(f'🎧 Génération {generation} — comparaison A/B/C')
         self.setWindowTitle(f'Auto Mix Compare — GEN {generation} — Balanced / Vocal Focus / Punchy')
         self._back_generation_btn.setVisible(parent is not None)
@@ -839,7 +846,7 @@ class MixCompareDialog(QDialog):
         # The render thread has already finished and released its QThread state.
         if self._load_comparison_in_place(report_path):
             self._generation_result_label.setText(
-                'GEN 2 · trois nouveaux WAV prêts. Analyse DSP → Hermes → LUFS automatique en cours…'
+                f'GEN {self._current_generation} · trois nouveaux WAV prêts. Analyse DSP → Hermes → LUFS automatique en cours…'
             )
             self._analysis_status.setText('Gen 2 · analyse automatique des trois nouveaux WAV…')
             QTimer.singleShot(150, self.start_automatic_analysis)
@@ -853,6 +860,8 @@ class MixCompareDialog(QDialog):
         message = ('Générer trois nouveaux prémix à partir des réglages actuels ?\n\n'
                    + '\n'.join(lines)
                    + '\n\nRaison : ' + proposal.get('reason', '')
+                   + ('\n\nPréférences et notes transmises à Hermes.' if proposal.get('preferences_used')
+                      else '\n\nAucune préférence utilisée pour cette proposition.')
                    + ('\n\nHermes indisponible : ' + proposal['ai_error'] if proposal.get('ai_error') else '')
                    + '\n\nLes WAV originaux ne seront pas modifiés. '
                      'Variations max ±1 dB par famille, pas de changements VST ou EQ.\n'

@@ -39,7 +39,9 @@ def test_results_provide_selection_playback_and_actual_handoff():
 def test_no_fake_album_or_streaming_master():
     text = (SOURCE / 'auto_studio_ui.py').read_text(encoding='utf-8')
     assert 'pas encore des masters certifiés' in text
-    assert 'albums complets suivront' in text
+    translations = (SOURCE / 'ui_language.py').read_text(encoding='utf-8')
+    assert 'For multiple songs or a stereo WAV, open Album Mode.' in translations
+    assert 'albums complets suivront' not in translations
 
 
 def test_real_comparison_report_validation(tmp_path):

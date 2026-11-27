@@ -43,7 +43,7 @@ class AuditionTests(unittest.TestCase):
             self.assertEqual(len(item['moves']),1)
 
     def test_ui_wires_explicit_confirmation(self):
-        text=(Path(__file__).parents[1]/'src'/'mastering_lab'/'auto_studio_ui.py').read_text()
+        text=(Path(__file__).parents[1]/'src'/'mastering_lab'/'auto_studio_ui.py').read_text(encoding='utf-8')
         self.assertIn('Je préfère Avant',text)
         self.assertIn('Je préfère Après',text)
         self.assertIn('record_eq_choice(',text)
