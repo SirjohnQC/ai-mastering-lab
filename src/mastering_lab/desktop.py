@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
     QSlider, QProgressBar, QGroupBox, QGridLayout, QFileDialog, QDoubleSpinBox,
     QDockWidget, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QSpinBox, QLineEdit, QAbstractItemView, QDialog, QSplashScreen)
 from .version import APP_VERSION, window_title
-from .studio_brand import studio_icon
+from .studio_brand import studio_icon, loading_card
 from .ollama_startup import ensure_ollama_running
 from .live_ab import LiveAB
 from .stem_plus_ui import StemPlusPage
@@ -761,8 +761,7 @@ def main(root:Path|None=None)->int:
         QMessageBox.warning(None,'Plugin settings',f'Plugin setup could not load: {exc}')
     # Run the JUCE device preflight in the startup splash, not on opening
     # a song. This process has a hard timeout and never exports audio.
-    splash_art=QPixmap(570,190)
-    splash_art.fill(QColor('#171923'))
+    splash_art=loading_card()
     splash=QSplashScreen(splash_art)
     splash.show()
     splash.showMessage('FRANKENSTEM · Vérification du moteur audio JUCE…',

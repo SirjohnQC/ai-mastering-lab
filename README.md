@@ -4,7 +4,7 @@
 
 # FRANKENSTEM · AI Mastering Lab
 
-A local Windows studio for stem mixing, comparing alternatives, technical mastering and album preparation. The current desktop application reports **v0.27.3**. Audio processing uses Python, FFmpeg and an optional native JUCE/VST3 host; local Ollama models provide optional advice.
+A local Windows studio for stem mixing, comparing alternatives, technical mastering and album preparation. The current desktop application reports **v0.27.4**. Audio processing uses Python, FFmpeg and an optional native JUCE/VST3 host; local Ollama models provide optional advice.
 
 ## Start with the music
 
@@ -30,7 +30,7 @@ python scripts/desktop.py
 
 Install FFmpeg and make `ffmpeg`/`ffprobe` available on PATH for mastering and audio conversion. Build the native host and configure installed, licensed plugins for the VST3 features; see [native build instructions](native/README.md). Pro-Q 4/Pro-C 3 workflows require compatible installed plugins and, for calibrated compression previews, local calibration. Ollama is optional for advice; availability of each audio operation depends on its local tools.
 
-This is a source checkout workflow. Packaging metadata still has the historical `0.5.0` version; `src/mastering_lab/version.py` is the desktop version shown in the app.
+This is a source checkout workflow. The desktop and package versions are both `0.27.4`. The startup loading card displays the FRANKENSTEM logo and version; the main workspace keeps a simple text heading.
 
 ## UI and workflow review
 

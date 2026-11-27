@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
 from .mix_comparison import load_comparison, VARIANT_ORDER, VARIANT_LABELS
 from .waveform_preview import WaveformStrip, WaveformLoader
 from .ui_language import get_language, set_language, tr
-from .studio_brand import brand_mark
 
 
 class MixCard(QFrame):
@@ -376,7 +375,6 @@ class AutoStudioPage(QWidget):
         root.setContentsMargins(6, 2, 6, 8)
         root.setSpacing(14)
         header = QHBoxLayout()
-        header.addWidget(brand_mark(self))
         identity = QVBoxLayout()
         identity.setSpacing(2)
         name = QLabel('FRANKENSTEM')
