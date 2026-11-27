@@ -386,6 +386,10 @@ class LiveStemDialog(QDialog):
 
     def _send(self,command):
         if self.ready and self.process.state()==QProcess.Running:
+            if command.get('cmd') == 'set' and 'mix' in command:
+                # Saved selections use "mix"; the native live protocol uses "wet".
+                command = dict(command)
+                command['wet'] = command.pop('mix')
             self.process.write((json.dumps(command)+'\n').encode('utf-8'))
 
     def _seek(self):
