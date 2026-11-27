@@ -206,7 +206,8 @@ class StemPlusPage(QWidget):
 
     def _guided_render_mix(self):
         self._auto_step('Étape 3/4 — Rendu des trois variantes (Balanced / Vocal Focus / Punchy)…')
-        self.save_config()
+        if not self.save_config():
+            return
         self._job(self.root/'scripts'/'auto_mix_candidates.py',
                   ['--folder',self.folder.text().strip(),'--config',str(self._config_path()),
                    '--prepared',str(self.cache_path()/'prepared.json'),
@@ -502,14 +503,21 @@ class StemPlusPage(QWidget):
         self.update_states()
 
     def save_config(self):
-        if not self._require_stems('la sauvegarde du mix'):return
+        if not self._require_stems('la sauvegarde du mix'):return False
         config={**self.config,'tracks':[{k:v for k,v in s.items() if k!='solo'} for s in self.states()]}
         path=self._config_path()
         try:
-            # Never overwrite original audio; this changes only the config JSON.
+            # A restored manual selection can precede creation of this project folder.
+            if self._selected_files_mode:
+                path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(config,indent=2,ensure_ascii=False),encoding='utf-8')
             self.status.setText(f'Configuration enregistrée : {path}')
-        except Exception as e:QMessageBox.warning(self,'Save error',str(e))
+            return True
+        except OSError as exc:
+            if self._guided_pipeline:
+                self._stop_guided_production(f'Auto Produce arrêté : {exc}')
+            QMessageBox.warning(self,'Save error',str(exc))
+            return False
 
     def cache_path(self):
         if self._selected_files_mode and self.config:
@@ -538,7 +546,8 @@ class StemPlusPage(QWidget):
 
     def prepare_eq(self):
         if not self._require_stems('la préparation EQ'):return
-        self.save_config()
+        if not self.save_config():
+            return
         if not any(s['eq'] for s in self.states()):
             # EQ can't be toggled before prepared; prepare selected rows, default all.
             msg=QMessageBox.question(self,'Prepare EQ','Préparer le traitement Pro-Q pour toutes les pistes? (Les fichiers originaux restent intacts.)')
@@ -558,7 +567,8 @@ class StemPlusPage(QWidget):
         The final master must still pass the later distribution QC stage.
         """
         if not self._require_stems('l’export vers le mastering'):return
-        self.save_config()
+        if not self.save_config():
+            return
         dest=self.root/'sound'/'source'/f'{"Selected-Stems" if self._selected_files_mode else Path(self.folder.text().strip()).name}-STEM-premix.wav'
         dest.parent.mkdir(parents=True,exist_ok=True)
         if dest.exists():
@@ -570,7 +580,8 @@ class StemPlusPage(QWidget):
 
     def render_mix(self):
         if not self._require_stems('le rendu du mix'):return
-        self.save_config()
+        if not self.save_config():
+            return
         self._job(self.root/'scripts'/'stem_mix.py',['--folder',self.folder.text().strip(),'--config',str(self._config_path()),'--prepared',str(self.cache_path()/'prepared.json')],'mix')
 
     def _find_comparison_report(self):
@@ -635,7 +646,8 @@ class StemPlusPage(QWidget):
     def auto_mix_candidates(self):
         """Render three conservative gain candidates; never alter active mixer settings."""
         if not self._require_stems('la comparaison Auto Mix'):return
-        self.save_config()
+        if not self.save_config():
+            return
         approval=QMessageBox.question(self,'Auto Mix — 3 versions',
             'Préparer Balanced, Vocal Focus et Punchy ?\n\n'
             'Les FX déjà préparés seront réutilisés si activés. '
@@ -671,7 +683,8 @@ class StemPlusPage(QWidget):
                         checkbox.setChecked(True)
                         checkbox.blockSignals(False)
                 if self._guided_pipeline:
-                    self.save_config()
+                    if not self.save_config():
+                        return
                 if self.selected_track is not None:
                     self.select_track(self.selected_track)
                 self.status.setText('FX préparés. Utilise FX ON pour comparer Dry/Wet.')
@@ -996,7 +1009,8 @@ class StemPlusPage(QWidget):
         for row in self.rows:
             widget=row['eq'];widget.blockSignals(True);widget.setChecked(False);widget.blockSignals(False)
         self.update_states()
-        self.save_config()
+        if not self.save_config():
+            return
         self.refresh_fx_list()
         self.log.appendPlainText(f"Auto FX: {result['added']} nouveaux FX sur {len(result['tracks_changed'])} pistes, mode {mode['value']}. Config saved. Original WAVs untouched.")
         if self._guided_pipeline:
@@ -1012,7 +1026,8 @@ class StemPlusPage(QWidget):
     def _guided_prepare_or_mix(self):
         if any(any(step.get('enabled', True) for step in r['entry'].get('fx_chain',[])) for r in self.rows):
             self._auto_step('Étape 2/4 — Préparation VST3 hors ligne…')
-            self.save_config()
+            if not self.save_config():
+                return
             self._job(self.root/'scripts'/'stem_fx_prepare.py',
                       ['--folder',self.folder.text().strip(),'--config',str(self._config_path()),
                        '--out',str(self.cache_path())], 'fx_prepare')
@@ -1023,7 +1038,8 @@ class StemPlusPage(QWidget):
 
     def prepare_fx(self):
         if not self._require_stems('la préparation des FX'):return
-        self.save_config()
+        if not self.save_config():
+            return
         if not any(any(step.get('enabled',True) for step in r['entry'].get('fx_chain',[])) for r in self.rows):
             QMessageBox.information(self,'No FX','Add at least one active VST3 to a track first.');return
         self._job(self.root/'scripts'/'stem_fx_prepare.py',
