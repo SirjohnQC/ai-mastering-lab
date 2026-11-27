@@ -19,23 +19,19 @@ from .version import APP_VERSION
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
 
-class AlbumReleaseCheckWorker(QThread):
+class AlbumOutputWorker(QThread):
     progress = Signal(int, int, str)
     completed = Signal(object, str)
 
-    def __init__(self, tracks, target, parent=None):
+    def __init__(self, operation, parent=None):
         super().__init__(parent)
-        self.tracks = tracks
-        self.target = target
+        self.operation = operation
         self.stop = threading.Event()
 
     def run(self):
-        from .album_release_check import check_album_release
-
         try:
-            report = check_album_release(self.tracks, self.target, stop=self.stop,
-                                         progress=self.progress.emit)
-            self.completed.emit(report, '')
+            result = self.operation(stop=self.stop, progress=self.progress.emit)
+            self.completed.emit(result, '')
         except Exception as exc:
             self.completed.emit(None, str(exc))
 
@@ -1092,7 +1088,7 @@ class AlbumStudioPage(QWidget):
         self._worker = None
         self._intelligence_worker = None
         self._recognition_worker = None
-        self._release_worker = None
+        self._output_worker = None
         self._intelligence_report = None
         try:
             self.project = load_project(self.project_path)
@@ -1255,6 +1251,9 @@ class AlbumStudioPage(QWidget):
         self.release_check_btn = QPushButton(self._album_text('Vérifier les masters', 'Release Check'))
         self.release_check_btn.clicked.connect(self._check_release)
         bottom.insertWidget(1, self.release_check_btn)
+        self.export_masters_btn = QPushButton(self._album_text('Exporter l’album', 'Export Album'))
+        self.export_masters_btn.clicked.connect(self._export_album)
+        bottom.insertWidget(2, self.export_masters_btn)
         layout.addLayout(bottom)
         self.album_eq = QCheckBox(self._album_text(
             'Prochain rendu · EQ correctif Hermes avec Pro-Q 4',
@@ -1287,7 +1286,7 @@ class AlbumStudioPage(QWidget):
         self._save()
 
     def _busy(self):
-        return bool(self._release_worker is not None
+        return bool(self._output_worker is not None
                     or (self._worker is not None and self._worker.isRunning())
                     or (self._intelligence_worker is not None
                         and self._intelligence_worker.isRunning())
@@ -1907,6 +1906,7 @@ class AlbumStudioPage(QWidget):
             f'{len(tracks)} chansons · {nstereo} WAV stéréo · {nstems} projets stems',
             f'{len(tracks)} songs · {nstereo} stereo WAVs · {nstems} stem projects'))
         self.release_check_btn.setEnabled(bool(tracks) and not self._busy())
+        self.export_masters_btn.setEnabled(bool(tracks) and not self._busy())
         self.album_eq.setEnabled(not self._busy())
         self.run_btn.setEnabled(bool(tracks) and not self._busy())
         self.back_btn.setEnabled(not self._busy())
@@ -1996,10 +1996,10 @@ class AlbumStudioPage(QWidget):
         self._refresh()
 
     def _cancel(self):
-        if self._release_worker is not None:
-            self._release_worker.stop.set()
+        if self._output_worker is not None:
+            self._output_worker.stop.set()
             self.cancel_btn.setEnabled(False)
-            self.progress_text.setText('Annulation du contrôle…')
+            self.progress_text.setText(self._album_text('Annulation…', 'Cancelling…'))
             return
         if self._worker is not None and self._worker.isRunning():
             self._worker.cancel()
@@ -2057,22 +2057,60 @@ class AlbumStudioPage(QWidget):
     def _check_release(self):
         if self._busy() or not self.project['tracks']:
             return
+        from functools import partial
+        from .album_release_check import check_album_release
+
         tracks = json.loads(json.dumps(self.project['tracks']))
         target = self.export_dir / 'album_release_check.json'
-        worker = AlbumReleaseCheckWorker(tracks, target, self)
-        self._release_worker = worker
+        self._start_output_job(partial(check_album_release, tracks, target),
+                               self._album_text('Contrôle sortie', 'Release check'),
+                               self._release_check_completed)
+
+    def _export_album(self):
+        if self._busy() or not self.project['tracks']:
+            return
+        destination = QFileDialog.getExistingDirectory(
+            self, self._album_text('Choisir le dossier de destination', 'Choose export destination'),
+            str(self.export_dir if self.export_dir.is_dir() else self.root))
+        if not destination:
+            return
+        from functools import partial
+        from .album_delivery import export_album_masters
+
+        self._save_title()
+        project = json.loads(json.dumps(self.project))
+        self._start_output_job(partial(export_album_masters, project, destination),
+                               self._album_text('Export album', 'Album export'),
+                               self._album_export_completed)
+
+    def _start_output_job(self, operation, label, completed):
+        worker = AlbumOutputWorker(operation, self)
+        self._output_worker = worker
         worker.progress.connect(lambda done, total, title:
-                                self._progress(done, total, 'Contrôle WAV · ' + title))
-        worker.completed.connect(self._release_check_completed)
-        worker.finished.connect(self._release_check_finished)
+                                self._progress(done, total, f'{label} · {title}'))
+        worker.completed.connect(completed)
+        worker.finished.connect(self._output_job_finished)
         worker.finished.connect(worker.deleteLater)
         self.cancel_btn.show()
         self.cancel_btn.setEnabled(True)
-        self.progress.setFormat(self._album_text('Contrôle sortie · %p%', 'Release check · %p%'))
+        self.progress.setFormat(label + ' · %p%')
         self.progress.show()
         self.progress.setValue(0)
+        self.progress_text.setText(label + '…')
         self._refresh()
         worker.start()
+
+    def _album_export_completed(self, folder, error):
+        if folder is None:
+            self.progress_text.setText(error.splitlines()[0] if error else '')
+            if not self._output_worker.stop.is_set():
+                QMessageBox.warning(self, self._album_text('Export album', 'Album export'), error)
+            return
+        from PySide6.QtGui import QDesktopServices
+
+        self.progress.setValue(100)
+        self.progress_text.setText(self._album_text('Album exporté · ', 'Album exported · ') + folder.name)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
     def _release_check_completed(self, report, error):
         if report is None:
@@ -2097,8 +2135,8 @@ class AlbumStudioPage(QWidget):
         dialog.setModal(True)
         dialog.show()
 
-    def _release_check_finished(self):
-        self._release_worker = None
+    def _output_job_finished(self):
+        self._output_worker = None
         self.cancel_btn.hide()
         self._refresh()
 
@@ -2116,9 +2154,9 @@ class AlbumStudioPage(QWidget):
         self.backRequested.emit()
 
     def shutdown(self):
-        if self._release_worker is not None:
-            self._release_worker.stop.set()
-            self._release_worker.wait()
+        if self._output_worker is not None:
+            self._output_worker.stop.set()
+            self._output_worker.wait()
         if self._busy():
             if self._worker is not None and self._worker.isRunning():
                 self._worker.cancel()
