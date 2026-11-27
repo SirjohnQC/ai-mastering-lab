@@ -631,18 +631,36 @@ class AlbumABDialog(QDialog):
 
 
 class AlbumSelectableCard(QFrame):
-    """Clicking non-button portions selects the corresponding album song."""
+    """Select or reorder an album song using the non-button area of its card."""
 
     def __init__(self, select_callback, parent=None):
         super().__init__(parent)
         self._select_callback = select_callback
+        self.drag_callback = None
+        self._press = None
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
+            self._press = event.position().toPoint()
             self._select_callback()
             event.accept()
         else:
             super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if (self._press is not None and self.drag_callback is not None
+                and event.buttons() & Qt.LeftButton
+                and (event.position().toPoint() - self._press).manhattanLength()
+                >= QApplication.startDragDistance()):
+            self._press = None
+            self.drag_callback()
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._press = None
+        super().mouseReleaseEvent(event)
 
 
 class StemInspectWorker(QThread):
@@ -1698,12 +1716,13 @@ class AlbumStudioPage(QWidget):
         for i, track in enumerate(tracks):
             path=track['path']
             card = AlbumSelectableCard(lambda source=path: self._select_song(source))
-            card.setToolTip('Clique pour sélectionner cette chanson; glisse ⠿ pour changer l’ordre.')
+            card.setToolTip('Clique pour sélectionner cette chanson ou glisse sa carte pour changer l’ordre.')
             card.setStyleSheet('QFrame { background:#1b1d29;border:1px solid #3a3d50;border-radius:9px }'
                                'QLabel {background:transparent;border:none}')
             line = QHBoxLayout(card)
             line.setContentsMargins(12, 8, 12, 8)
             number = QLabel(str(i+1).zfill(2))
+            number.setAttribute(Qt.WA_TransparentForMouseEvents, True)
             number.setStyleSheet('color:#9ea5b8;background:transparent')
             line.addWidget(number)
             info = QVBoxLayout()
@@ -1782,6 +1801,7 @@ class AlbumStudioPage(QWidget):
             item.setSizeHint(card.sizeHint())
             self.track_list.addItem(item)
             drag_handle.item = item
+            card.drag_callback = lambda item=item: self.track_list.begin_handle_drag(item)
             self.track_list.setItemWidget(item, card)
         if selected_path:
             for index in range(self.track_list.count()):
