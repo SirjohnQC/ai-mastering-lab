@@ -1,5 +1,5 @@
 """Album stem batch: render three mixes, evaluate with optional local Hermes,
-and technically master the selected candidate. No VST automation or album harmonisation.
+and technically master the selected candidate, with optional corrective EQ.
 """
 from __future__ import annotations
 import hashlib
@@ -33,9 +33,11 @@ def source_signature(path: str | Path, kind: str) -> str:
     return hashlib.sha256(json.dumps(pieces, ensure_ascii=False).encode('utf-8')).hexdigest()
 
 
-def can_reuse_master(row: dict, *, external_reference_wav=None) -> bool:
+def can_reuse_master(row: dict, *, external_reference_wav=None, corrective_eq=False) -> bool:
     result = row.get('result') or {}
     if row.get('status') != 'qc_pass' or result.get('status') != 'qc_pass':
+        return False
+    if bool(result.get('album_corrective_eq')) != bool(corrective_eq):
         return False
     master = result.get('file')
     if not master or not Path(master).is_file():
@@ -79,6 +81,43 @@ def can_reuse_master(row: dict, *, external_reference_wav=None) -> bool:
         return saved == source_signature(row['path'], row['kind'])
     except (OSError, ValueError):
         return False
+
+
+def master_album_with_eq(source, output_dir, *, root, plugin, reference_path=None,
+                         stop=None, progress=None):
+    """Apply the opt-in, bounded EQ before measuring and mastering the result."""
+    from .auto_master import master_song, MasteringCancelled
+    from .ai_fx_intelligence import propose_for_wav, render_approved_eq
+
+    def check_cancelled():
+        if stop is not None and stop.is_set():
+            raise MasteringCancelled('EQ album annulé.')
+
+    def notify(message):
+        check_cancelled()
+        if progress:
+            progress(message)
+
+    notify('Hermes · analyse EQ de ' + Path(source).stem)
+    plan = propose_for_wav(source, reference_path=reference_path,
+                           eq_preferences_path=Path(root) / 'settings/eq_preferences.json')
+    check_cancelled()
+    eq = {'status': 'no_change', 'summary': plan['summary'], 'moves': []}
+    mastering_input = source
+    if plan['moves']:
+        eq = render_approved_eq(source, plan, root=root, plugin=plugin, progress=notify)
+        mastering_input = eq['after']
+    check_cancelled()
+    result = master_song(mastering_input, output_dir, stop=stop)
+    result['album_corrective_eq'] = eq
+    sidecar = Path(result['file']).with_suffix('.qc.json')
+    temporary = sidecar.with_suffix('.json.tmp')
+    try:
+        temporary.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
+        temporary.replace(sidecar)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return result
 
 
 def master_stem_folder(folder, output_dir, *, stop=None, progress=None,

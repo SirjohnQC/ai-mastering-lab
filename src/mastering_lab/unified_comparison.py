@@ -57,6 +57,7 @@ def _cache_valid(root, result):
 
 class PrepareNineWorker(QThread):
     completed = Signal(object)
+    phase = Signal(str)
 
     def __init__(self, root, paths, parent=None):
         super().__init__(parent)
@@ -77,6 +78,15 @@ class PrepareNineWorker(QThread):
                         return
                 except (OSError, ValueError, TypeError, KeyError):
                     pass
+            if not (self.root / 'settings/pro_c3_multipoint.json').is_file():
+                from .pro_c3_calibration import inspect_and_save
+                from .pro_c3_multipoint import probe_and_save
+
+                self.phase.emit('Pro-C 3 · calibration automatique…')
+                if not (self.root / 'settings/pro_c3_calibration.json').is_file():
+                    inspect_and_save(self.root)
+                probe_and_save(self.root)
+                self.phase.emit('Pro-C 3 · préparation des variantes…')
             data = {}
             for key in MIXES:
                 result = make_preview(self.root, self.paths[key], song_aware=True, smart_gentle=True)
@@ -452,6 +462,7 @@ class UnifiedComparison(QWidget):
         worker = PrepareNineWorker(self.root, dict(self._sources), self)
         self.worker = worker
         worker.completed.connect(self._on_prepared)
+        worker.phase.connect(self.status.setText)
         worker.finished.connect(self._worker_finished)
         worker.finished.connect(worker.deleteLater)
         worker.start()

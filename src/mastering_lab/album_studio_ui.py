@@ -23,8 +23,10 @@ class AlbumBatchWorker(QThread):
     stage = Signal(int, int, str)          # number finished, total, message
     done = Signal(bool)                   # cancelled
 
-    def __init__(self, entries, target, parent=None, *, reference_path=None, external_reference_wav=None):
+    def __init__(self, entries, target, parent=None, *, reference_path=None, external_reference_wav=None, eq_root=None, eq_plugin=None):
         super().__init__(parent)
+        self.eq_root = eq_root
+        self.eq_plugin = eq_plugin
         self.entries = entries
         self.target = Path(target)
         self.reference_path = reference_path
@@ -38,12 +40,20 @@ class AlbumBatchWorker(QThread):
         from .auto_master import master_song, MasteringCancelled
         from .album_stem_pipeline import source_signature, can_reuse_master, master_stem_folder
         from .album_export_naming import rename_album_master
+        from .album_stem_pipeline import master_album_with_eq
+        master = master_song
+        if self.eq_plugin is not None:
+            def master(source, target, *, stop):
+                return master_album_with_eq(source, target, root=self.eq_root,
+                    plugin=self.eq_plugin, reference_path=self.reference_path, stop=stop,
+                    progress=lambda message: self.stage.emit(finished, count, message))
         count = len(self.entries)
         finished = 0
         for idx, row in self.entries:
             if self.stop_event.is_set():
                 break
-            if can_reuse_master(row, external_reference_wav=self.external_reference_wav):
+            if can_reuse_master(row, external_reference_wav=self.external_reference_wav,
+                                corrective_eq=self.eq_plugin is not None):
                 self.item.emit(idx, 'qc_pass', row.get('result'), '')
             elif (row['kind'] == 'stems' and not Path(row['path']).is_dir()) or (row['kind'] == 'stereo' and not Path(row['path']).is_file()):
                 self.item.emit(idx, 'error', None, 'Source audio introuvable')
@@ -54,10 +64,10 @@ class AlbumBatchWorker(QThread):
                             progress=lambda message, completed=finished: self.stage.emit(completed, count, message),
                             reference_path=self.reference_path,
                             external_reference_wav=self.external_reference_wav,
-                            stem_saturation=row.get('stem_saturation'))
+                            stem_saturation=row.get('stem_saturation'), master_fn=master)
                     else:
                         self.stage.emit(finished, count, 'Mastering : ' + row['title'])
-                        result = rename_album_master(dict(master_song(row['path'], self.target, stop=self.stop_event)), row['title'])
+                        result = rename_album_master(dict(master(row['path'], self.target, stop=self.stop_event)), row['title'])
                         result['album_source_signature'] = source_signature(row['path'], 'stereo')
                     self.item.emit(idx, result['status'], result, '')
                 except MasteringCancelled:
@@ -1204,11 +1214,19 @@ class AlbumStudioPage(QWidget):
         self.report_btn.clicked.connect(self._open_output)
         bottom.addWidget(self.report_btn)
         layout.addLayout(bottom)
-        foot = QLabel('Décisions Hermes limitées aux gains de groupes (±1 dB), sans FX automatiques. Hermes propose le mix à masteriser (secours : Balanced). '
+        self.album_eq = QCheckBox('Appliquer l’EQ correctif Hermes avec Pro-Q 4 avant le mastering')
+        self.album_eq.setChecked(self.project.get('album_corrective_eq_enabled') is True)
+        self.album_eq.toggled.connect(self._set_album_eq)
+        layout.addWidget(self.album_eq)
+        foot = QLabel('Décisions Hermes limitées aux gains de groupes (±1 dB), pour les prémix. Hermes propose le mix à masteriser (secours : Balanced). '
                       'La cohérence artistique de l’album reste à développer.')
         foot.setWordWrap(True)
         foot.setStyleSheet('background:transparent;color:#a0aabd;font-size:12px')
         layout.addWidget(foot)
+
+    def _set_album_eq(self, enabled):
+        self.project['album_corrective_eq_enabled'] = enabled
+        self._save()
 
     def _busy(self):
         return bool((self._worker is not None and self._worker.isRunning())
@@ -1738,6 +1756,10 @@ class AlbumStudioPage(QWidget):
             result = track.get('result') or {}
             selected = result.get('album_selected_candidate')
             selection = result.get('album_ai_selection') or {}
+            eq = result.get('album_corrective_eq')
+            if eq:
+                detail.setText(detail.text() + ('  ·  EQ Hermes appliqué' if eq.get('moves')
+                                               else '  ·  EQ Hermes : aucun ajustement'))
             if selected:
                 label = {'balanced': 'Balanced', 'vocal-focus': 'Vocal Focus', 'punchy': 'Punchy'}.get(selected, selected)
                 mode = '✦ Choix IA' if selection.get('mode') == 'hermes' else '⚠ Choix secours'
@@ -1818,6 +1840,7 @@ class AlbumStudioPage(QWidget):
         nstereo = sum(t['kind']=='stereo' for t in tracks)
         nstems = len(tracks) - nstereo
         self.summary.setText(f'{len(tracks)} chansons · {nstereo} WAV stéréo · {nstems} projets stems')
+        self.album_eq.setEnabled(not self._busy())
         self.run_btn.setEnabled(bool(tracks) and not self._busy())
         self.back_btn.setEnabled(not self._busy())
         self.import_master_btn.setEnabled(not self._busy() and any(
@@ -1854,10 +1877,19 @@ class AlbumStudioPage(QWidget):
                     self.progress_text.setText(
                         'Référence d’album sélectionnée, mais master QC en attente : '
                         'prémix guidé par les préférences habituelles.')
+        eq_plugin = None
+        if self.album_eq.isChecked():
+            from .plugin_registry import selected_proq4
+
+            eq_plugin = selected_proq4(self.root / 'settings/vst_roles.json')
+            if eq_plugin is None:
+                QMessageBox.warning(self, 'EQ album', 'Configure Pro-Q 4 comme EQ correctif dans Plugins.')
+                return
         self._worker = AlbumBatchWorker(
             rows, self.export_dir, self,
             reference_path=library_path(self.root),
-            external_reference_wav=str(external) if external else None)
+            external_reference_wav=str(external) if external else None,
+            eq_root=self.root, eq_plugin=eq_plugin)
         self._worker.item.connect(self._item_result)
         self._worker.stage.connect(self._progress)
         self._worker.done.connect(self._done)
