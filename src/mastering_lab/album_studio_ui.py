@@ -64,7 +64,8 @@ class AlbumBatchWorker(QThread):
                             progress=lambda message, completed=finished: self.stage.emit(completed, count, message),
                             reference_path=self.reference_path,
                             external_reference_wav=self.external_reference_wav,
-                            stem_saturation=row.get('stem_saturation'), master_fn=master)
+                            stem_saturation=row.get('stem_saturation'),
+                            de_sizzle=row.get('stem_de_sizzle'), master_fn=master)
                     else:
                         self.stage.emit(finished, count, 'Mastering : ' + row['title'])
                         result = rename_album_master(dict(master(row['path'], self.target, stop=self.stop_event)), row['title'])
@@ -1360,16 +1361,19 @@ class AlbumStudioPage(QWidget):
         try:
             from .live_stem_ui import LiveStemDialog
             dialog=LiveStemDialog(self.root,track['path'],
-                                  track.get('stem_saturation'),self)
+                                  track.get('stem_saturation'), self,
+                                  de_sizzle=track.get('stem_de_sizzle'))
         except (OSError,ValueError) as exc:
             QMessageBox.warning(self,'FRANKENSTEM Live',str(exc))
             return
         if dialog.exec()!=QDialog.Accepted:
             return
-        if dialog.selection==(track.get('stem_saturation') or {}):
+        if (dialog.selection == (track.get('stem_saturation') or {})
+                and dialog.de_sizzle == (track.get('stem_de_sizzle') or {})):
             return
         track['stem_saturation']=dialog.selection
         track['status']='waiting'
+        track['stem_de_sizzle'] = dialog.de_sizzle
         track['error']='Live FX approuvés — relance Auto Produce pour mastering QC.'
         self._intelligence_report=None
         self.consistency_detail.clear()

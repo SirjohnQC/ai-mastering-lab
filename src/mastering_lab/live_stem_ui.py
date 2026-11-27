@@ -22,10 +22,14 @@ from .live_engine_startup import locate_engine
 from .version import APP_VERSION
 
 
-def _scan_whistles(path, model, cancelled, result):
+def _scan_whistles(path, model, cancelled, result, broad=False):
     try:
         from .vocal_whistle import scan_vocal_whistles
 
+        if broad:
+            from .de_sizzle import scan_sizzle
+            result.set_result((scan_sizzle(path, cancelled=cancelled.is_set), ""))
+            return
         markers = scan_vocal_whistles(path, cancelled=cancelled.is_set)
         note = ''
         if model and not cancelled.is_set():
@@ -45,7 +49,7 @@ def find_live_engine(root):
 
 
 class LiveStemDialog(QDialog):
-    def __init__(self, root, folder, saved=None, parent=None):
+    def __init__(self, root, folder, saved=None, parent=None, *, de_sizzle=None):
         super().__init__(parent)
         self.root=Path(root)
         self.config=config_template(Path(folder))
@@ -68,6 +72,9 @@ class LiveStemDialog(QDialog):
         self._loading=False
         self.output=None
         self.whistle_supported = False
+        self.de_sizzle_supported = False
+        self.de_sizzle = {path: list(markers) for path, markers in (de_sizzle or {}).items()}
+        self.sizzle_results = {}
         self.whistle_results = {}
         self.whistle_job = None
         self.whistle_cancel = Event()
@@ -178,7 +185,10 @@ class LiveStemDialog(QDialog):
         self.whistle_vision = QCheckBox('Vision Ollama')
         self.whistle_vision.setToolTip('Ajoute un avis visuel du modèle configuré dans les réglages IA.')
         row = QHBoxLayout()
+        self.sizzle_scan = QPushButton("Analyser De-Sizzle")
+        self.sizzle_scan.clicked.connect(lambda: self._start_whistle_scan(broad=True))
         row.addWidget(self.whistle_scan)
+        row.addWidget(self.sizzle_scan)
         row.addWidget(self.whistle_vision)
         layout.addLayout(row)
 
@@ -197,6 +207,9 @@ class LiveStemDialog(QDialog):
         for widget in (self.whistle_markers, self.whistle_jump, self.whistle_mode):
             row.addWidget(widget)
         layout.addLayout(row)
+        self.sizzle_approve = QCheckBox('Appliquer ce passage dans Auto Produce')
+        self.sizzle_approve.toggled.connect(self._approve_sizzle_passage)
+        layout.addWidget(self.sizzle_approve)
         self.whistle_note = QLabel()
         self.whistle_note.setWordWrap(True)
         self.whistle_note.setTextFormat(Qt.PlainText)
@@ -205,56 +218,67 @@ class LiveStemDialog(QDialog):
         self.whistle_poll.setInterval(120)
         self.whistle_poll.timeout.connect(self._finish_whistle_scan)
 
-    def _start_whistle_scan(self):
+    def _start_whistle_scan(self, *, broad=False):
         if not self.whistle_supported or not self.ready or self.whistle_job is not None:
             return
         model = None
-        if self.whistle_vision.isChecked():
+        if not broad and self.whistle_vision.isChecked():
             from .ai_settings_ui import read_ai_preferences
             model = read_ai_preferences(self.root)['vision_model']
         result = Future()
-        self.whistle_job = self.active, result
+        self.whistle_job = self.active, result, broad
         self._refresh_whistles()
         Thread(target=_scan_whistles,
-               args=(self.rows[self.active]['file'], model, self.whistle_cancel, result),
+               args=(self.rows[self.active]['file'], model, self.whistle_cancel, result, broad),
                daemon=True).start()
         self.whistle_poll.start()
 
     def _finish_whistle_scan(self):
-        index, result = self.whistle_job
+        index, result, broad = self.whistle_job
         if not result.done():
             return
         self.whistle_poll.stop()
         self.whistle_job = None
+        results = self.sizzle_results if broad else self.whistle_results
         try:
-            self.whistle_results[index] = result.result()
+            results[index] = result.result()
         except Exception as exc:
-            self.whistle_results[index] = [], 'Analyse indisponible · ' + str(exc)[:250]
+            results[index] = [], 'Analyse indisponible · ' + str(exc)[:250]
         self._refresh_whistles()
 
     def _refresh_whistles(self):
         available = self.ready and self.whistle_supported
         self.whistle_scan.setEnabled(available and self.whistle_job is None)
         self.whistle_vision.setEnabled(available and self.whistle_job is None)
+        self.sizzle_scan.setEnabled(available and self.de_sizzle_supported and self.whistle_job is None)
         markers, note = self.whistle_results.get(self.active, ([], ''))
+        broad, sizzle_note = self.sizzle_results.get(self.active, ([], ''))
+        saved = self.de_sizzle.get(self.rows[self.active]['file'], [])
+        if self.de_sizzle_supported:
+            merged = {(m['start'], m['end']): m for m in [*broad, *saved]}
+            markers = [*markers, *merged.values()]
+        note = ' '.join(filter(None, (note, sizzle_note)))
         self.whistle_markers.blockSignals(True)
         self.whistle_markers.clear()
         for marker in markers:
+            label = "De-Sizzle · " if marker.get("kind") == "sizzle" else "Sifflement · "
             self.whistle_markers.addItem(
-                f"{marker['start']:.2f}–{marker['end']:.2f} s · {marker['hz']:.0f} Hz", marker)
+                label + f"{marker['start']:.2f}–{marker['end']:.2f} s · {marker['hz']:.0f} Hz", marker)
         self.whistle_markers.blockSignals(False)
         has_marker = available and bool(markers)
         for widget in (self.whistle_markers, self.whistle_jump, self.whistle_mode):
             widget.setEnabled(has_marker)
         if self.ready and not available:
             status = 'Recompile frankenstem-live pour activer la correction spectrale.'
+        elif self.ready and not self.de_sizzle_supported:
+            status = 'Recompile frankenstem-live pour activer De-Sizzle.'
         elif self.whistle_job is not None:
             status = 'Analyse du stem en cours…'
-        elif self.active in self.whistle_results:
+        elif self.active in self.whistle_results or self.active in self.sizzle_results:
             status = (f'{len(markers)} passage(s) à vérifier.' if markers else
-                      'Aucune crête étroite persistante repérée.')
+                      'Aucun passage détecté.')
         else:
-            status = 'Choisis un stem vocal pour chercher des sifflements. Écoute seulement.'
+            status = 'Choisis une voix ou un stem de cymbales, puis lance une analyse.'
         self.whistle_note.setText(f'{status} {note}'.strip())
         self._select_whistle()
 
@@ -264,7 +288,37 @@ class LiveStemDialog(QDialog):
         self.whistle_mode.blockSignals(False)
         if self.whistle_supported:
             marker = self.whistle_markers.currentData()
-            self._send({'cmd': 'whistle', **({'stem': self.active, **marker} if marker else {})})
+            broad = bool(marker and marker.get('kind') == 'sizzle')
+            self._send({'cmd': 'de_sizzle' if broad else 'whistle',
+                        **({'stem': self.active, **marker} if marker else {})})
+        self.sizzle_approve.blockSignals(True)
+        self.sizzle_approve.setEnabled(self.ready and bool(self.whistle_markers.currentData())
+                                      and self.whistle_markers.currentData().get('kind') == 'sizzle')
+        self.sizzle_approve.setChecked(self.whistle_markers.currentData() in
+                                     self.de_sizzle.get(self.rows[self.active]['file'], []))
+        self.sizzle_approve.blockSignals(False)
+
+    def _approve_sizzle_passage(self, checked):
+        from .de_sizzle import MAX_PASSAGES
+
+        marker = self.whistle_markers.currentData()
+        if not marker or marker.get('kind') != 'sizzle':
+            return
+        path = self.rows[self.active]['file']
+        approved = self.de_sizzle.get(path, [])
+        if checked and marker not in approved:
+            if len(approved) >= MAX_PASSAGES:
+                self.sizzle_approve.blockSignals(True)
+                self.sizzle_approve.setChecked(False)
+                self.sizzle_approve.blockSignals(False)
+                return
+            self.de_sizzle[path] = [*approved, marker]
+        elif not checked:
+            remaining = [item for item in approved if item != marker]
+            if remaining:
+                self.de_sizzle[path] = remaining
+            else:
+                self.de_sizzle.pop(path, None)
 
     def _set_whistle_mode(self, *_):
         self._send({'cmd': 'whistle_mode', 'mode': self.whistle_mode.currentData()})
@@ -362,6 +416,7 @@ class LiveStemDialog(QDialog):
                 return
             self.ready=True
             self.whistle_supported = data.get('whistle_preview') is True
+            self.de_sizzle_supported = data.get('de_sizzle_preview') is True
             self.state.setText('⚡ LIVE · JUCE · '+str(expected)+' stems synchronisés')
             for item in self.controls: item.setEnabled(True)
             self.buttons.button(QDialogButtonBox.Save).setEnabled(True)

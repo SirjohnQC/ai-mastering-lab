@@ -169,8 +169,9 @@ public:
                     repair.mix += (target - repair.mix) * repair.smoothing;
                     const float removedL = (l - repair.filter(0, l)) * edge * repair.mix;
                     const float removedR = (r - repair.filter(1, r)) * edge * repair.mix;
-                    l = residual ? removedL : l - removedL;
-                    r = residual ? removedR : r - removedR;
+                    const float match = 1.f + (repair.matchGain - 1.f) * edge * repair.mix;
+                    l = residual ? removedL : (l - removedL) * match;
+                    r = residual ? removedR : (r - removedR) * match;
                 }
                 dstL[i]+=l*stem->smoothedGain*pan;
                 dstR[i]+=r*stem->smoothedGain*pan;
@@ -205,7 +206,8 @@ public:
             seek((int64)jlimit(0.0,(double)length,seconds*rate));
             return true;
         }
-        if (action=="whistle") {
+        if (action=="whistle" || action=="de_sizzle") {
+            const bool broad = action == "de_sizzle";
             const var stemValue = prop(msg,"stem");
             if (stemValue.isVoid()) {
                 repair = {};
@@ -224,12 +226,17 @@ public:
             }
             repair = {};
             repair.stem = index;
+            if (broad) {
+                const auto db = number(prop(msg, "match_db"), 0.f);
+                repair.matchGain = Decibels::decibelsToGain(jlimit(0.f, 1.f, db));
+            }
             repair.start = static_cast<int64>(std::llround(start * rate));
             repair.end = static_cast<int64>(std::llround(end * rate));
             repair.fade = static_cast<float>(rate * 0.02);
             repair.smoothing = 1.f / static_cast<float>(rate * 0.005);
             auto coeff = dsp::IIR::ArrayCoefficients<float>::makePeakFilter(
-                rate, static_cast<float>(hz), 55.f, Decibels::decibelsToGain(-6.f));
+                rate, static_cast<float>(hz), broad ? 0.85f : 55.f,
+                Decibels::decibelsToGain(broad ? -3.f : -6.f));
             repair.coefficients = {coeff[0] / coeff[3], coeff[1] / coeff[3],
                                    coeff[2] / coeff[3], coeff[4] / coeff[3],
                                    coeff[5] / coeff[3]};
@@ -298,7 +305,7 @@ private:
         Mode mode = original;
         int stem = -1;
         int64 start = 0, end = 0;
-        float fade = 1.f, smoothing = 1.f, mix = 0.f;
+        float fade = 1.f, smoothing = 1.f, mix = 0.f, matchGain = 1.f;
         std::array<float, 5> coefficients {};
         std::array<std::array<float, 2>, 2> state {};
 
@@ -419,6 +426,7 @@ int main(int argc,char** argv) {
         msg->setProperty("status","ready");
         msg->setProperty("sample_rate",mixer.sampleRate());
         msg->setProperty("whistle_preview",true);
+        msg->setProperty("de_sizzle_preview",true);
         Array<var> stems;
         for(size_t i=0;i<mixer.count();++i) stems.add(mixer.stem(i).name);
         msg->setProperty("stems",var(stems));

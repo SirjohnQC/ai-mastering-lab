@@ -49,6 +49,8 @@ def can_reuse_master(row: dict, *, external_reference_wav=None, corrective_eq=Fa
         from .stem_saturation import selection_signature
         saved_sat=result.get('album_stem_saturation_signature','none')
         requested_sat=selection_signature(row.get('stem_saturation'))
+        if (result.get('album_stem_de_sizzle') or {}) != (row.get('stem_de_sizzle') or {}):
+            return False
         if saved_sat!=requested_sat:
             return False
         # Do not reuse the old dry-only v0.15.1 result as a three-candidate job.
@@ -121,7 +123,7 @@ def master_album_with_eq(source, output_dir, *, root, plugin, reference_path=Non
 
 
 def master_stem_folder(folder, output_dir, *, stop=None, progress=None,
-                       render_mix_fn=None, master_fn=None, ai_decider=None, selection_fn=None, reference_path=None, external_reference_wav=None, stem_saturation=None) -> dict:
+                       render_mix_fn=None, master_fn=None, ai_decider=None, selection_fn=None, reference_path=None, external_reference_wav=None, stem_saturation=None, de_sizzle=None) -> dict:
     """Render dry A/B/C, select with bounded Hermes and master chosen candidate.
 
     No originals / saved stem configuration are modified. Cancellation between
@@ -154,6 +156,10 @@ def master_stem_folder(folder, output_dir, *, stop=None, progress=None,
     prepared, saturation_report=prepare_selected_stems(
         config,saturation_settings,target_dir/'saturated_stems',stop=stop
     )
+    if de_sizzle:
+        from .de_sizzle import prepare_de_sizzle
+
+        prepare_de_sizzle(config, de_sizzle, prepared, target_dir, stop=stop)
     # The prepared, original-length wet prints enter the normal mixer before
     # group gain decisions and before technical mastering. All three variants
     # use the same user-approved selection, with no source-stem modification.
@@ -172,9 +178,13 @@ def master_stem_folder(folder, output_dir, *, stop=None, progress=None,
         mix_config=mixes[name]
         if prepared:
             for key in prepared:
-                mix_config['tracks'][int(key)]['eq']=True
-                mix_config['tracks'][int(key)]['fx_chain']=[
-                    {'kind':'approved_stem_saturation'}]
+                track = mix_config['tracks'][int(key)]
+                track['eq'] = True
+                track['fx_chain'] = []
+                if track['file'] in (saturation_settings or {}):
+                    track['fx_chain'].append({'kind': 'approved_stem_saturation'})
+                if track['file'] in (de_sizzle or {}):
+                    track['fx_chain'].append({'kind': 'approved_de_sizzle'})
         if render_mix_fn is None:
             reports[name]=fn(folder,mix_config,out,prepared=prepared)
         else:
@@ -210,6 +220,7 @@ def master_stem_folder(folder, output_dir, *, stop=None, progress=None,
         'album_pipeline': PIPELINE_ID,
         'album_stem_saturation_signature':saturation_signature,
         'album_stem_saturation':saturation_report,
+        'album_stem_de_sizzle': de_sizzle or {},
         'album_external_reference_path': str(external_reference_wav) if external_reference_wav else None,
         'album_external_reference_signature': source_signature(external_reference_wav, 'stereo') if external_reference_wav else None,
         'album_reference_library_path': str(reference_path) if reference_path else None,
@@ -229,6 +240,7 @@ def master_stem_folder(folder, output_dir, *, stop=None, progress=None,
         'source_signature': signature, 'selected': selected,
         'candidates': rendered, 'reports': reports, 'ai_decisions': ai_report,
         'stem_saturation':saturation_report,
+        'stem_de_sizzle': de_sizzle or {},
         'ai_selection': selection_report,
     }, ensure_ascii=False, indent=2, default=str), encoding='utf-8')
     result['album_candidates_manifest'] = str(manifest)
