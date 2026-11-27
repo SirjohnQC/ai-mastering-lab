@@ -187,6 +187,7 @@ class UnifiedComparison(QWidget):
         self._files = {}
         self._reports = {}
         self._diagnostics = {}
+        self._prepare_failed = False
         self._ai_compression = {}
         self._intensity = 'balanced'
         self._advisor_choice = 'original'
@@ -435,6 +436,7 @@ class UnifiedComparison(QWidget):
         self._files.clear()
         self._reports.clear()
         self._diagnostics = {}
+        self._prepare_failed = False
         self._ai_compression = {}
         self._marker_reference = None
         self._advisor_choice = 'original'
@@ -703,7 +705,8 @@ class UnifiedComparison(QWidget):
         if not metrics:
             self._advisor_choice = 'original'
             self.audition_suggestion.setEnabled(False)
-            self.advisor_status.setText(tr(self._language,'compare_advice_pending'))
+            self.advisor_status.setText(tr(self._language,
+                'compare_advice_failed' if self._prepare_failed else 'compare_advice_pending'))
             return
         result = suggest_compression(metrics, mix, self._intensity)
         fallback_choice = result['variant']
@@ -754,7 +757,13 @@ class UnifiedComparison(QWidget):
     def _on_prepared(self, result):
         self.prepare.setEnabled(True)
         if result.get('status') != 'ready':
-            self.status.setText(tr(self._language,'compare_render_fail',error=result.get('error','unknown')))
+            self._prepare_failed = True
+            self._update_advisor()
+            error = result.get('error', 'unknown')
+            if 'FileNotFoundError' in error and 'pro_c3_multipoint.json' in error:
+                self.status.setText(tr(self._language, 'compare_calibration_missing'))
+            else:
+                self.status.setText(tr(self._language, 'compare_render_fail', error=error))
             self.prepare.setVisible(True)
             self.prepared.emit(False)
             return
@@ -997,6 +1006,7 @@ class UnifiedComparison(QWidget):
         self._files.clear()
         self._reports.clear()
         self._diagnostics = {}
+        self._prepare_failed = False
         self._approved = None
         self._session_tag = None
         self._sources = {}
