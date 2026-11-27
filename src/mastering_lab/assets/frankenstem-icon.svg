@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">FRANKENSTEM</title>
+  <desc id="desc">Three violet stem signals join a mint green F-shaped output.</desc>
+  <rect x="2" y="2" width="124" height="124" rx="30" fill="#171e2c" stroke="#344158" stroke-width="2"/>
+  <path d="M25 40h18M25 64h18M25 88h18" fill="none" stroke="#aaa3ff" stroke-width="8" stroke-linecap="round"/>
+  <path d="M57 94V34h43M57 61h33" fill="none" stroke="#73e2bf" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="100" cy="34" r="5" fill="#e9fff7"/>
+</svg>

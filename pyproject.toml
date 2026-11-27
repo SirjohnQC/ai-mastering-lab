@@ -14,3 +14,6 @@ analysis = ["numpy>=1.24", "scipy>=1.10", "soundfile>=0.12"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+mastering_lab = ["assets/*.svg"]

@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
 from .mix_comparison import load_comparison, VARIANT_ORDER, VARIANT_LABELS
 from .waveform_preview import WaveformStrip, WaveformLoader
 from .ui_language import get_language, set_language, tr
+from .studio_brand import brand_mark
 
 
 class MixCard(QFrame):
@@ -345,31 +346,53 @@ class AutoStudioPage(QWidget):
             QWidget#autoStudioPage QLabel { background:transparent; border:none; }
             QWidget#autoStudioPage QFrame#mixCard QLabel { background:transparent; border:none; }
             QWidget#autoStudioPage QPushButton#primary {
-                background:#7779d9; color:#fff; border-radius:9px;
+                background:#73e2bf; color:#10261f; border-radius:9px;
                 font-weight:700; padding:12px 18px;
             }
+            QWidget#autoStudioPage QPushButton#primary:hover { background:#98efd4; }
+            QWidget#autoStudioPage QPushButton#primary:disabled {
+                background:#242d3c; color:#8f9cb0; border:1px solid #364255;
+            }
+            QWidget#autoStudioPage QPushButton:focus { border:2px solid #aaa3ff; }
+            QWidget#autoStudioPage QFrame#sessionGuide {
+                background:#172630; border:1px solid #34564f; border-radius:9px;
+            }
+            QWidget#autoStudioPage QLineEdit {
+                background:#192231; border:1px solid #425169; border-radius:8px;
+                padding:10px; selection-background-color:#56528e;
+            }
+            QWidget#autoStudioPage QLineEdit:focus { border:1px solid #73e2bf; }
         """)
         outer = QHBoxLayout(self)
         outer.setContentsMargins(22, 22, 22, 22)
         outer.addStretch(1)
         self.content = QWidget(self)
         self.content.setObjectName('autoStudioContent')
-        self.content.setMaximumWidth(900)
+        self.content.setMaximumWidth(1040)
         self.content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         outer.addWidget(self.content, 10)
         outer.addStretch(1)
         root = QVBoxLayout(self.content)
         root.setContentsMargins(6, 2, 6, 8)
-        root.setSpacing(18)
+        root.setSpacing(14)
         header = QHBoxLayout()
-        name = QLabel('FRANKENSTEM  ·  AUTO STUDIO')
-        name.setStyleSheet('background:transparent;font-size:20px;font-weight:800;color:#f0efff;')
-        header.addWidget(name)
+        header.addWidget(brand_mark(self))
+        identity = QVBoxLayout()
+        identity.setSpacing(2)
+        name = QLabel('FRANKENSTEM')
+        name.setStyleSheet('font-size:22px;font-weight:800;color:#f0f5ff;letter-spacing:2px;')
+        identity.addWidget(name)
+        self.brand_caption = QLabel('AI MASTERING LAB / AUTO STUDIO')
+        self.brand_caption.setStyleSheet('color:#a8b6cb;font-size:10px;letter-spacing:2px;')
+        identity.addWidget(self.brand_caption)
+        header.addLayout(identity)
         header.addStretch()
+        root.addLayout(header)
+        utilities = QHBoxLayout()
         advanced = QPushButton('⚙  Advanced')
         advanced.setObjectName('secondary')
         advanced.clicked.connect(lambda *_: self.openAdvanced.emit())
-        header.addWidget(advanced)
+        utilities.addWidget(advanced)
         from PySide6.QtWidgets import QComboBox
         self.language_combo = QComboBox(self)
         self.language_combo.addItem('Français', 'fr')
@@ -382,15 +405,16 @@ class AutoStudioPage(QWidget):
         album_button = QPushButton('💿  Album Mode')
         album_button.setObjectName('secondary')
         album_button.clicked.connect(self._open_album)
-        header.addWidget(album_button)
+        utilities.insertWidget(0, album_button)
         self.album_header_button = album_button
         reference_button = QPushButton('♫  Références')
         reference_button.setObjectName('secondary')
         reference_button.setToolTip('Analyser des fichiers audio et guider Hermes avec un profil de référence local')
         reference_button.clicked.connect(self._open_references)
-        header.addWidget(reference_button)
+        utilities.insertWidget(1, reference_button)
         self.references_header_button = reference_button
-        root.addLayout(header)
+        utilities.addStretch()
+        root.addLayout(utilities)
         subtitle = QLabel('Charge tes stems, lance Auto Produce, compare les 3 mixages et approuve ton choix avant Mastering.')
         subtitle.setWordWrap(True)
         subtitle.setStyleSheet('color:#abb5c8;')
@@ -412,6 +436,7 @@ class AutoStudioPage(QWidget):
                 action.clicked.connect(self._show_results)
             else:
                 action.clicked.connect(self._open_master_stage)
+            action.clicked.connect(self._refresh_workflow)
             nav.addWidget(action, 1)
             self.nav.append(action)
         nav.setSpacing(8)
@@ -452,7 +477,7 @@ class AutoStudioPage(QWidget):
         title.setStyleSheet('font-size:26px;font-weight:750;')
         v.addWidget(title)
         self.import_headline = title
-        explanation = QLabel('Commence avec les stems d’une chanson. Les fichiers stéréo et albums complets suivront dans un prochain module.')
+        explanation = QLabel()
         explanation.setStyleSheet('color:#abb5c8;')
         explanation.setWordWrap(True)
         v.addWidget(explanation)
@@ -475,6 +500,7 @@ class AutoStudioPage(QWidget):
         v.addLayout(h)
         self.file_info = QLabel('Aucun stem chargé')
         self.file_info.setStyleSheet('color:#acb5c8;')
+        self.file_info.setWordWrap(True)
         v.addWidget(self.file_info)
         self.produce_btn = QPushButton('✦  AUTO PRODUCE')
         self.produce_btn.setObjectName('primary')
@@ -891,7 +917,21 @@ class AutoStudioPage(QWidget):
         ml.addWidget(caution)
         self.master_caution = caution
         ml.addStretch(2)
-        self.stack.addWidget(master)
+        master_scroll = QScrollArea()
+        master_scroll.setWidgetResizable(True)
+        master_scroll.setFrameShape(QFrame.NoFrame)
+        master_scroll.setWidget(master)
+        self.stack.addWidget(master_scroll)
+        self.session_guide = QFrame()
+        self.session_guide.setObjectName('sessionGuide')
+        guide_layout = QVBoxLayout(self.session_guide)
+        guide_layout.setContentsMargins(14, 10, 14, 10)
+        self.next_step = QLabel()
+        self.next_step.setWordWrap(True)
+        self.next_step.setStyleSheet('color:#bfe9dc;font-size:12px;')
+        guide_layout.addWidget(self.next_step)
+        root.insertWidget(root.indexOf(self.stack), self.session_guide)
+        self.stack.currentChanged.connect(self._refresh_workflow)
         self._apply_language()
         self._go(0)
 
@@ -911,10 +951,13 @@ class AutoStudioPage(QWidget):
         self.references_header_button.setText(tr(lang, 'references'))
         self.subtitle_label.setText(tr(lang, 'intro'))
         for i, key in enumerate(('import','produce','compare','master')):
-            self.nav[i].setText(tr(lang, key))
+            self.nav[i].setText(f'{i + 1:02d}  {tr(lang, key)}')
+            self.nav[i].setAccessibleName(tr(lang, key))
+            self.nav[i].setToolTip(tr(lang, f'workflow_{key}'))
         self.pick_stems_button.setText(tr(lang,'pick_stems'))
         self.pick_folder_button.setText(tr(lang,'pick_folder'))
         self.song_title_import.setPlaceholderText(tr(lang,'song_title'))
+        self.song_title_import.setAccessibleName(tr(lang,'song_title'))
         self.stem_list_heading.setText(tr(lang,'selected_stems'))
         self.import_headline.setText(tr(lang,'import_headline'))
         self.import_explanation.setText(tr(lang,'import_explanation'))
@@ -947,12 +990,37 @@ class AutoStudioPage(QWidget):
             self.disclaimer_label.setText(tr(lang,'disclaimer'))
             if self._master_input is None:
                 self.master_description.setText(tr(lang,'master_initial'))
+                self.master_status.setText(tr(lang,'master_initial'))
             else:
                 self.master_description.setText(tr(lang,'source',name=self._master_input.name,
                                                    variant=self._master_mix_variant or 'original'))
         self._refresh_master_report()
         self._refresh_preflight_report()
         self._update_master_button()
+        self._refresh_workflow()
+
+    def _refresh_workflow(self, *_):
+        """Explain the actual screen, including Album Mode, without starting work."""
+        index = self.stack.currentIndex()
+        if index == 0:
+            key = 'workflow_ready' if self.stems.rows else 'workflow_import'
+        else:
+            key = {1: 'workflow_produce', 2: 'workflow_compare',
+                   3: 'workflow_master'}.get(index, 'workflow_album')
+        self.next_step.setText(tr(self._language, key))
+        for i, button in enumerate(self.nav):
+            button.setCheckable(True)
+            button.setChecked(i == index)
+            chosen = i == index
+            button.setStyleSheet(
+                'QPushButton { background:%s;border:1px solid %s;border-radius:8px;'
+                'color:%s;font-weight:%s;padding:8px; }'
+                'QPushButton:hover { background:#292b3e; }' % (
+                    '#292741' if chosen else '#191b24',
+                    '#68629d' if chosen else '#303340',
+                    '#f5f4ff' if chosen else '#a0aab9',
+                    '700' if chosen else '400') +
+                'QPushButton:focus { border:2px solid #aaa3ff; }')
 
     def _toggle_optional_tools(self):
         show = not self.optional_tools_panel.isVisible()
@@ -981,8 +1049,7 @@ class AutoStudioPage(QWidget):
             self._album_page = AlbumStudioPage(self.root, self)
             self.stack.addWidget(self._album_page)
         self.stack.setCurrentWidget(self._album_page)
-        for button in self.nav:
-            button.setStyleSheet('')
+        self._refresh_workflow()
 
     def _go(self, index):
         if index == 2 and hasattr(self, 'unified'):
@@ -992,16 +1059,7 @@ class AutoStudioPage(QWidget):
         if index != 2 and self._fx_ab_player is not None:
             self._fx_ab_player.stop()
         self.stack.setCurrentIndex(index)
-        for i, button in enumerate(self.nav):
-            chosen = i == min(index, 3)
-            button.setStyleSheet(
-                'QPushButton { background:%s;border:1px solid %s;border-radius:8px;'
-                'color:%s;font-weight:%s;padding:8px; }'
-                'QPushButton:hover { background:#292b3e; }' % (
-                    '#292741' if chosen else '#191b24',
-                    '#68629d' if chosen else '#303340',
-                    '#f5f4ff' if chosen else '#a0aab9',
-                    '700' if chosen else '400'))
+        self._refresh_workflow()
 
     def _start_cached_compare(self):
         if self.stack.currentIndex() != 2 or not hasattr(self, 'unified'):
@@ -1040,6 +1098,8 @@ class AutoStudioPage(QWidget):
                 self.produce_btn.setFocus()
 
     def _show_results(self):
+        if not self._can_change_music():
+            return
         if self._report and self._player:
             self._go(2)
         else:

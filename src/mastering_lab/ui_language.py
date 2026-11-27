@@ -99,7 +99,7 @@ TRANSLATIONS = {
 # rather than translating arbitrary log text or model output on the fly.
 TRANSLATIONS['fr'].update({
  'import_headline':'Ta musique, ton prochain mix.',
- 'import_explanation':'Commence avec les stems d’une chanson. Les fichiers stéréo et albums complets suivront dans un prochain module.',
+ 'import_explanation':'Ajoute les pistes séparées d’une chanson, puis crée trois propositions de mixage. Pour plusieurs chansons ou un WAV stéréo, ouvre Mode album.',
  'selected_stems':'STEMS SÉLECTIONNÉS', 'no_stems':'Aucun stem chargé',
  'loaded_stems':'✓ {count} stems chargés · {label}',
  'producing_headline':'On s’occupe du mixage. 🎸', 'producing_wait':'Préparation…',
@@ -143,7 +143,7 @@ TRANSLATIONS['fr'].update({
 })
 TRANSLATIONS['en'].update({
  'import_headline':'Your music, your next mix.',
- 'import_explanation':'Start with one song’s stems. Direct stereo mixes and complete albums will follow in a future module.',
+ 'import_explanation':'Add one song’s separate tracks, then create three mix options. For multiple songs or a stereo WAV, open Album Mode.',
  'selected_stems':'SELECTED STEMS', 'no_stems':'No stems loaded',
  'loaded_stems':'✓ {count} stems loaded · {label}',
  'producing_headline':'Mixing your song. 🎸', 'producing_wait':'Preparing…',
@@ -184,6 +184,24 @@ TRANSLATIONS['en'].update({
  'compare_status_wait':'Pro-C 3 previews are prepared automatically when entering Compare.',
  'compare_diagnostics_notice':'Technical details are available under Diagnostics · Advanced.',
  'compare_tech_note':'PCM diagnostics do not directly measure Pro-C 3 gain reduction.',
+})
+
+
+TRANSLATIONS['fr'].update({
+    'workflow_import': 'POUR COMMENCER  /  Choisis des stems ou un dossier. Auto Produce devient disponible après le chargement.',
+    'workflow_ready': 'PRÊT À PRODUIRE  /  Vérifie les stems et le titre, puis lance Auto Produce. Les originaux restent intacts.',
+    'workflow_produce': 'PRODUCTION  /  Préparation des mixages. Suis l’avancement ci-dessous; Annuler permet d’interrompre le traitement.',
+    'workflow_compare': 'ÉCOUTE ET CHOISIS  /  Compare les mixages et la compression. Le cœur approuve une compression pour le mastering; sinon Original est utilisé.',
+    'workflow_master': 'MASTER ET VÉRIFICATION  /  Lance Auto Master, écoute le résultat et consulte le contrôle qualité avant de récupérer le WAV.',
+    'workflow_album': 'MODE ALBUM  /  Importe tes chansons, définis leur ordre et vérifie les masters. Importer te ramène au travail sur une chanson.',
+})
+TRANSLATIONS['en'].update({
+    'workflow_import': 'START HERE  /  Choose stems or a folder. Auto Produce becomes available after your tracks load.',
+    'workflow_ready': 'READY TO PRODUCE  /  Review your stems and song title, then run Auto Produce. Your originals stay untouched.',
+    'workflow_produce': 'PRODUCING  /  Preparing your mixes. Follow progress below; use Cancel to interrupt processing.',
+    'workflow_compare': 'LISTEN AND CHOOSE  /  Compare mixes and compression. The heart approves compression for mastering; otherwise Original is used.',
+    'workflow_master': 'MASTER AND CHECK  /  Run Auto Master, listen to the result and review quality checks before collecting your WAV.',
+    'workflow_album': 'ALBUM MODE  /  Import songs, set their order and check the masters. Import returns to your single-song session.',
 })
 
 
