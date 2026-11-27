@@ -93,7 +93,12 @@ def compare_album(project: dict, *, reference_index: int | None = None, external
         ref_result = rows[reference_index]['result']
         reference_title = rows[reference_index].get('title','')
     profile = profile_fn or spectrum_profile
-    ref_spec = profile(reference_path)
+    if external_reference_wav is not None:
+        from .album_external_reference import external_reference_pcm
+        with external_reference_pcm(reference_path) as pcm:
+            ref_spec = profile(pcm)
+    else:
+        ref_spec = profile(reference_path)
     ref_shares = np.asarray(ref_spec['band_shares'],dtype='float64')
     if ref_shares.shape!=(len(BANDS),) or not np.isfinite(ref_shares).all() or np.any(ref_shares<0):
         raise ValueError('Invalid reference spectrum.')

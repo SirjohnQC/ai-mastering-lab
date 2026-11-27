@@ -1111,12 +1111,12 @@ class AlbumStudioPage(QWidget):
         self.recognition_status.setWordWrap(True)
         self.recognition_status.setStyleSheet('color:#aebbd1;font-size:11px;')
         layout.addWidget(self.recognition_status)
-        # Independent WAV reference, NOT an album song to process.
+        # Independent audio reference, NOT an album song to process.
         external_row = QHBoxLayout()
-        self.external_reference_label = QLabel('WAV de référence indépendant : aucun')
+        self.external_reference_label = QLabel('Fichier de référence indépendant : aucun')
         self.external_reference_label.setWordWrap(True)
         external_row.addWidget(self.external_reference_label,1)
-        self.external_ref_select = QPushButton('♫ Choisir WAV de référence')
+        self.external_ref_select = QPushButton('♫ Choisir référence WAV / MP3')
         self.external_ref_select.clicked.connect(self._choose_external_reference)
         external_row.addWidget(self.external_ref_select)
         self.external_ref_clear = QPushButton('× Retirer')
@@ -1124,7 +1124,7 @@ class AlbumStudioPage(QWidget):
         external_row.addWidget(self.external_ref_clear)
         layout.addLayout(external_row)
         self.reference_hint = QLabel(
-            'Ce WAV sert à guider le choix du prémix puis à comparer les masters finaux. '
+            'Ce fichier sert à guider le choix du prémix puis à comparer les masters finaux. '
             'Il n’est pas ajouté aux pistes de l’album et ne sera jamais remasterisé.')
         self.reference_hint.setWordWrap(True)
         self.reference_hint.setStyleSheet('color:#aebbd1;font-size:11px;')
@@ -1412,13 +1412,13 @@ class AlbumStudioPage(QWidget):
     def _update_external_reference_display(self):
         ref=self._external_reference()
         if ref:
-            self.external_reference_label.setText('WAV de référence : '+ref.name)
+            self.external_reference_label.setText('Référence audio : '+ref.name)
             self.external_ref_clear.setEnabled(not self._busy())
         else:
             self.external_reference_label.setText(
-                '⚠ Référence WAV absente ou invalide'
+                '⚠ Référence audio absente ou invalide'
                 if self.project.get('external_reference_wav') else
-                'WAV de référence indépendant : aucun')
+                'Fichier de référence indépendant : aucun')
             self.external_ref_clear.setEnabled(
                 bool(self.project.get('external_reference_wav')) and not self._busy())
         self.external_ref_select.setEnabled(not self._busy())
@@ -1441,14 +1441,14 @@ class AlbumStudioPage(QWidget):
         if self._busy():
             return
         selected,_=QFileDialog.getOpenFileName(
-            self,'Choisir un WAV de référence indépendant','','Stereo WAV (*.wav)')
+            self,'Choisir un fichier de référence indépendant','','Audio de référence (*.wav *.mp3)')
         if not selected:
             return
         try:
             from .album_external_reference import validate_external_reference
             path=validate_external_reference(selected)
         except (OSError,ValueError) as exc:
-            QMessageBox.warning(self,'Référence WAV',str(exc))
+            QMessageBox.warning(self,'Référence audio',str(exc))
             return
         self.project['external_reference_wav']=str(path)
         self.project['album_reference_mode']='external'
@@ -1512,14 +1512,14 @@ class AlbumStudioPage(QWidget):
         choice = self.reference_picker.currentData()
         external = self._external_reference() if self._reference_mode()=='external' else None
         if self._reference_mode()=='external' and self.project.get('external_reference_wav') and external is None:
-            QMessageBox.warning(self, 'Référence WAV',
-                'Le WAV de référence enregistré est introuvable ou invalide. '
-                'Choisis un autre WAV ou retire cette référence.')
+            QMessageBox.warning(self, 'Référence audio',
+                'Le fichier de référence enregistré est introuvable ou invalide. '
+                'Choisis un autre WAV ou MP3, ou retire cette référence.')
             return
         if external is None:
             if choice is None:
                 QMessageBox.information(self,'Album Intelligence',
-                                        'Choisis un WAV indépendant ou une chanson.')
+                                        'Choisis un WAV, un MP3 ou une chanson.')
                 return
             row=self.project['tracks'][choice[0]]
             result=row.get('result') or {}
@@ -1836,8 +1836,8 @@ class AlbumStudioPage(QWidget):
         from .reference_learning import library_path
         external = self._external_reference() if self._reference_mode()=='external' else None
         if self._reference_mode()=='external' and self.project.get('external_reference_wav') and external is None:
-            QMessageBox.warning(self, 'Référence WAV',
-                'Le WAV de référence est manquant ou invalide. '
+            QMessageBox.warning(self, 'Référence audio',
+                'Le fichier de référence est manquant ou invalide. '
                 'Change la référence avant Auto Produce Album.')
             return
         if self._reference_mode()=='album':

@@ -157,17 +157,17 @@ def choose_candidate(paths, *, analyzer=None, ask_fn=None, model='hermes3:8b', e
         if reference_path is not None:
             reference = load_active_context(reference_path)
         if external_reference_wav is not None:
-            from .album_external_reference import validate_external_reference
-            standalone = validate_external_reference(external_reference_wav)
-            # A manually selected single-song WAV takes precedence over
+            from .album_external_reference import external_reference_pcm
+            # A manually selected single-song reference takes precedence over
             # general multi-song Reference Learning when producing this album.
-            standalone_features = extract_features(standalone)
+            with external_reference_pcm(external_reference_wav) as pcm:
+                standalone_features = extract_features(pcm)
             reference = {
                 'count':1, 'bands_hz':[list(band) for band in BANDS_HZ],
                 'mean_spectral_shares':standalone_features['spectral_shares'],
                 'median_crest_db':standalone_features['crest_db'],
                 'source_kind':'album_standalone_wav',
-                'limitations':'One sampled WAV used as a weak timbre preference, not a full mix match.'}
+                'limitations':'One sampled file used as a weak timbre preference, not a full mix match.'}
         if reference:
             # Derived measurements ONLY reach local Hermes, never source audio.
             candidate_profiles = {key: extract_features(paths[key])['spectral_shares']
