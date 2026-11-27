@@ -9,13 +9,34 @@ from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel,
     QPushButton, QLineEdit, QComboBox, QFileDialog, QMessageBox, QProgressBar, QScrollArea,
     QListWidget, QListWidgetItem, QAbstractItemView, QApplication, QDialog, QSlider,
-    QCheckBox, QDoubleSpinBox, QDialogButtonBox)
+    QCheckBox, QDoubleSpinBox, QDialogButtonBox, QPlainTextEdit)
 
 from .album_project import (empty_project, load_project, save_project,
                             add_entries, discover_album, album_summary, reorder_tracks, move_track_onto)
 from .album_match_advisor import advise_album, localized_card
 from .ui_language import get_language
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+
+
+class AlbumReleaseCheckWorker(QThread):
+    progress = Signal(int, int, str)
+    completed = Signal(object, str)
+
+    def __init__(self, tracks, target, parent=None):
+        super().__init__(parent)
+        self.tracks = tracks
+        self.target = target
+        self.stop = threading.Event()
+
+    def run(self):
+        from .album_release_check import check_album_release
+
+        try:
+            report = check_album_release(self.tracks, self.target, stop=self.stop,
+                                         progress=self.progress.emit)
+            self.completed.emit(report, '')
+        except Exception as exc:
+            self.completed.emit(None, str(exc))
 
 
 class AlbumBatchWorker(QThread):
@@ -1070,6 +1091,7 @@ class AlbumStudioPage(QWidget):
         self._worker = None
         self._intelligence_worker = None
         self._recognition_worker = None
+        self._release_worker = None
         self._intelligence_report = None
         try:
             self.project = load_project(self.project_path)
@@ -1215,6 +1237,9 @@ class AlbumStudioPage(QWidget):
         self.report_btn.clicked.connect(self._open_output)
         bottom.addWidget(self.report_btn)
         layout.addLayout(bottom)
+        self.release_check_btn = QPushButton('Vérifier les masters avant sortie')
+        self.release_check_btn.clicked.connect(self._check_release)
+        layout.addWidget(self.release_check_btn)
         self.album_eq = QCheckBox('Appliquer l’EQ correctif Hermes avec Pro-Q 4 avant le mastering')
         self.album_eq.setChecked(self.project.get('album_corrective_eq_enabled') is True)
         self.album_eq.toggled.connect(self._set_album_eq)
@@ -1230,7 +1255,8 @@ class AlbumStudioPage(QWidget):
         self._save()
 
     def _busy(self):
-        return bool((self._worker is not None and self._worker.isRunning())
+        return bool(self._release_worker is not None
+                    or (self._worker is not None and self._worker.isRunning())
                     or (self._intelligence_worker is not None
                         and self._intelligence_worker.isRunning())
                     or (self._recognition_worker is not None
@@ -1844,6 +1870,7 @@ class AlbumStudioPage(QWidget):
         nstereo = sum(t['kind']=='stereo' for t in tracks)
         nstems = len(tracks) - nstereo
         self.summary.setText(f'{len(tracks)} chansons · {nstereo} WAV stéréo · {nstems} projets stems')
+        self.release_check_btn.setEnabled(bool(tracks) and not self._busy())
         self.album_eq.setEnabled(not self._busy())
         self.run_btn.setEnabled(bool(tracks) and not self._busy())
         self.back_btn.setEnabled(not self._busy())
@@ -1931,7 +1958,12 @@ class AlbumStudioPage(QWidget):
         self._refresh()
 
     def _cancel(self):
-        if self._busy():
+        if self._release_worker is not None:
+            self._release_worker.stop.set()
+            self.cancel_btn.setEnabled(False)
+            self.progress_text.setText('Annulation du contrôle…')
+            return
+        if self._worker is not None and self._worker.isRunning():
             self._worker.cancel()
             self.cancel_btn.setEnabled(False)
             self.progress_text.setText('Annulation demandée…')
@@ -1984,6 +2016,52 @@ class AlbumStudioPage(QWidget):
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
+    def _check_release(self):
+        if self._busy() or not self.project['tracks']:
+            return
+        tracks = json.loads(json.dumps(self.project['tracks']))
+        target = self.export_dir / 'album_release_check.json'
+        worker = AlbumReleaseCheckWorker(tracks, target, self)
+        self._release_worker = worker
+        worker.progress.connect(lambda done, total, title:
+                                self._progress(done, total, 'Contrôle WAV · ' + title))
+        worker.completed.connect(self._release_check_completed)
+        worker.finished.connect(self._release_check_finished)
+        worker.finished.connect(worker.deleteLater)
+        self.cancel_btn.show()
+        self.cancel_btn.setEnabled(True)
+        self.progress.setValue(0)
+        self._refresh()
+        worker.start()
+
+    def _release_check_completed(self, report, error):
+        if report is None:
+            self.progress_text.setText(error)
+            return
+        from .album_release_check import format_album_release
+
+        self.progress.setValue(100)
+        self.progress_text.setText('Contrôle terminé · album_release_check.json')
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Contrôle des masters avant sortie')
+        dialog.resize(640, 480)
+        layout = QVBoxLayout(dialog)
+        details = QPlainTextEdit(dialog)
+        details.setReadOnly(True)
+        details.setPlainText(format_album_release(report))
+        layout.addWidget(details)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close, parent=dialog)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.setModal(True)
+        dialog.show()
+
+    def _release_check_finished(self):
+        self._release_worker = None
+        self.cancel_btn.hide()
+        self._refresh()
+
     def _open_output(self):
         from PySide6.QtCore import QUrl
         from PySide6.QtGui import QDesktopServices
@@ -1998,6 +2076,9 @@ class AlbumStudioPage(QWidget):
         self.backRequested.emit()
 
     def shutdown(self):
+        if self._release_worker is not None:
+            self._release_worker.stop.set()
+            self._release_worker.wait()
         if self._busy():
             if self._worker is not None and self._worker.isRunning():
                 self._worker.cancel()

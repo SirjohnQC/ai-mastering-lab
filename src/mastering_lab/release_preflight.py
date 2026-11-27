@@ -14,7 +14,7 @@ class PreflightError(RuntimeError):
     pass
 
 
-def analyze_wav(path, *, measure_loudness=None, write_report=True):
+def analyze_wav(path, *, measure_loudness=None, write_report=True, stop=None):
     import numpy as np
     import soundfile as sf
 
@@ -49,6 +49,9 @@ def analyze_wav(path, *, measure_loudness=None, write_report=True):
         first_active = None
         last_active = None
         while True:
+            if stop is not None and stop.is_set():
+                from .auto_master import MasteringCancelled
+                raise MasteringCancelled("Contrôle avant sortie annulé.")
             audio = wav.read(131072, dtype='float64', always_2d=True)
             if len(audio) == 0:
                 break
@@ -95,6 +98,9 @@ def analyze_wav(path, *, measure_loudness=None, write_report=True):
                 warnings.append('True peak supérieur à −1 dBTP : vérifier l’encodage avec pertes.')
             # -14 LUFS is a normalization reference, NOT a mandatory delivery spec.
         except Exception as exc:
+            if stop is not None and stop.is_set():
+                raise
+            loudness = None
             issues.append(f'Impossible de vérifier LUFS et true peak : {type(exc).__name__}: {exc}')
     else:
         warnings.append('LUFS et true peak non mesurés : FFmpeg requis pour validation complète.')
@@ -129,13 +135,14 @@ def analyze_wav(path, *, measure_loudness=None, write_report=True):
     return result
 
 
-def run_preflight(path, *, write_report=True):
+def run_preflight(path, *, write_report=True, stop=None):
     import shutil
     from .auto_master import _measure
     ffmpeg = shutil.which('ffmpeg')
     if not ffmpeg:
         raise PreflightError('FFmpeg introuvable : redémarre le terminal après installation.')
-    return analyze_wav(path, measure_loudness=lambda p: _measure(ffmpeg, p), write_report=write_report)
+    return analyze_wav(path, measure_loudness=lambda p: _measure(ffmpeg, p, stop=stop),
+                       write_report=write_report, stop=stop)
 
 
 def format_preflight(result, language='fr'):
